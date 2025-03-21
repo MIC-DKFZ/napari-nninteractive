@@ -69,7 +69,7 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu12
 Either install via pip:
 
 ```bash
-pip install napari-nninteractive`
+pip install napari-nninteractive
 ```
 
 Or clone and install this repository:
