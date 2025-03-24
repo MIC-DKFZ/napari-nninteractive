@@ -46,6 +46,8 @@ testing = [
     "pyqt5",
 ]
 
+all = ["napari[all]"]
+
 [project.entry-points."napari.manifest"]
 napari-nninteractive = "napari_nninteractive:napari.yaml"
 
