@@ -157,7 +157,7 @@ class LayerControls(BaseGUI):
             data,
             # self._data_result,
             name=name,
-            opacity=0.3,
+            opacity=0.6,
             affine=self.session_cfg["affine"],
             scale=self.session_cfg["scale"],
             translate=self.session_cfg["translate"],
