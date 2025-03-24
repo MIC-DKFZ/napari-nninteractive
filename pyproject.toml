@@ -27,6 +27,7 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "torch",
+    "napari",
     "numpy",
     "qtpy",
     "napari-nifti",
