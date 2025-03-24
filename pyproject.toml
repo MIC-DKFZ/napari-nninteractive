@@ -46,7 +46,6 @@ testing = [
     "napari",
     "pyqt5",
 ]
-
 all = ["napari[all]"]
 
 [project.entry-points."napari.manifest"]
