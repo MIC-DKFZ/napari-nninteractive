@@ -64,12 +64,12 @@ For Ubuntu with a Nvidia GPU, pick 'stable', 'Linux', 'Pip', 'Python', 'CUDA12.6
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
-##### 3. Install this repository + dependencies via
+##### 3. Install this package, including napari & dependencies, via
 
 Either install via pip:
 
 ```bash
-pip install napari-nninteractive
+pip install "napari-nninteractive[all]"  # the [all] here is napari[all]
 ```
 
 Or clone and install this repository:
@@ -79,6 +79,7 @@ git clone https://github.com/MIC-DKFZ/napari-nninteractive
 cd napari-nninteractive
 pip install -e .
 ```
+Note: in this case you will need to have installed a Qt backend for napari, e.g. pyqt5 or pyqt6.
 
 **Note:** Model weights are automatically downloaded on first use. This can take up to a couple of minutes depending on your internet connection
 
