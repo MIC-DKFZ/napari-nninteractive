@@ -96,9 +96,15 @@ class nnInteractiveWidget(LayerControls):
         self.session.set_image(_data, {"spacing": self.session_cfg["spacing"]})
 
         self.session.set_target_buffer(self._data_result)
-        self._scribble_brush_size = self.session.preferred_scribble_thickness[
-            self._viewer.dims.not_displayed[0]
-        ]
+
+        if self._viewer.dims.not_displayed != ():
+            self._scribble_brush_size = self.session.preferred_scribble_thickness[
+                self._viewer.dims.not_displayed[0]
+            ]
+        else:
+            self._scribble_brush_size = self.session.preferred_scribble_thickness[
+                self._viewer.dims.order[0]
+            ]
         # Set the prompt type to positive
         self.prompt_button._uncheck()
         self.prompt_button._check(0)
@@ -154,9 +160,16 @@ class nnInteractiveWidget(LayerControls):
     def on_axis_change(self, event: Any):
         """Change the brush size of the scribble layer when the axis changes"""
         if self.session is not None:
-            self._scribble_brush_size = self.session.preferred_scribble_thickness[
-                self._viewer.dims.not_displayed[0]
-            ]
+
+            if self._viewer.dims.not_displayed != ():
+                self._scribble_brush_size = self.session.preferred_scribble_thickness[
+                    self._viewer.dims.not_displayed[0]
+                ]
+            else:
+                self._scribble_brush_size = self.session.preferred_scribble_thickness[
+                    self._viewer.dims.order[0]
+                ]
+
             if self.scribble_layer_name in self._viewer.layers:
                 self._viewer.layers[self.scribble_layer_name].brush_size = self._scribble_brush_size
 
