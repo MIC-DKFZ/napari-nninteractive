@@ -314,8 +314,10 @@ class LayerControls(BaseGUI):
 
             # 2. to Transforms
             self.session_cfg["scale"] = np.insert(self.session_cfg["scale"], 0, 1)
-            self.session_cfg["origin"] = np.insert(self.session_cfg["origin"], 0, 0)
-            self.session_cfg["shear"] = np.insert(self.session_cfg["origin"], 0, 0)
+            self.session_cfg["translate"] = np.insert(self.session_cfg["translate"], 0, 0)
+            if len(self.session_cfg["shear"]) == 1:
+                self.session_cfg["shear"] = np.append(self.session_cfg["shear"], 0)
+            self.session_cfg["shear"] = np.insert(self.session_cfg["shear"], 0, 0)
             _rot = np.eye(self.session_cfg["ndim"])
             _rot[-2:, -2:] = self.session_cfg["rotate"]
             self.session_cfg["rotate"] = _rot

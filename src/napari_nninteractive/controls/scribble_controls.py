@@ -18,7 +18,7 @@ class CustomQtScribbleControls(QtLabelsControls):
             self.preserveLabelsCheckBox,
             self.selectedColorCheckbox,
             # self.blendComboBox,
-            #self.brushSizeSlider,
+            # self.brushSizeSlider,
             self.contourSpinBox,
             self.ndimSpinBox,
         ]
