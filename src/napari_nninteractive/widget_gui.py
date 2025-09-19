@@ -212,7 +212,7 @@ class BaseGUI(QWidget):
         _text = setup_label(h_layout, "Class ID:", stretch=2)
         _text.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         _text.setFixedWidth(70)
-        self.class_for_init = setup_spinbox(h_layout, default=1, stretch=1)
+        self.class_for_init = setup_spinbox(h_layout, maximum=999, default=1, stretch=1)
         self.class_for_init.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
 
         _layout.addLayout(h_layout)
