@@ -14,9 +14,6 @@ from qtpy.QtWidgets import QWidget
 
 from napari_nninteractive.widget_controls import LayerControls
 
-# class nnInteractiveWidget(LayerControls):
-#     """Just a Debug Dummy without all the machine learning stuff"""
-
 
 class nnInteractiveWidget(LayerControls):
     """

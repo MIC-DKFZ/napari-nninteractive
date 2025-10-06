@@ -82,7 +82,7 @@ class LayerControls(BaseGUI):
             shear=self.session_cfg["shear"],
             metadata=self.session_cfg["metadata"],
             opacity=0.7,
-            size=3,
+            size=5,
             prompt_index=self.prompt_button.index,
         )
 

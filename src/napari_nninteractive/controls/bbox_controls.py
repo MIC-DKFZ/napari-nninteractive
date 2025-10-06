@@ -1,5 +1,7 @@
 from napari._qt.layer_controls.qt_shapes_controls import QtShapesControls
 from napari.utils.action_manager import action_manager
+import napari
+from packaging.version import Version
 
 
 class CustomQtBBoxControls(QtShapesControls):
@@ -11,14 +13,25 @@ class CustomQtBBoxControls(QtShapesControls):
 
     def __init__(self, layer):
         super().__init__(layer)
-
         # We don't need this Fields -> Hide them
-        fields_to_hide = [self.faceColorEdit, self.edgeColorEdit]
-        for field in fields_to_hide:
-            label_item = self.layout().labelForField(field)
-            field.hide()
-            label_item.hide()
-            field.setDisabled(True)
+        if Version(napari.__version__) >= Version("0.6.5"):
+            fields_to_hide = [
+                self._face_color_control.face_color_edit,
+                self._edge_color_control.edge_color_edit,
+                self._face_color_control.face_color_label,
+                self._edge_color_control.edge_color_label,
+            ]
+
+            for field in fields_to_hide:
+                field.hide()
+                field.setDisabled(True)
+        else:
+            fields_to_hide = [self.faceColorEdit, self.edgeColorEdit]
+            for field in fields_to_hide:
+                label_item = self.layout().labelForField(field)
+                field.hide()
+                label_item.hide()
+                field.setDisabled(True)
 
         # We don't need all these button -> hide and disable tem + remove key binding
         buttons_to_hide = [
@@ -36,6 +49,7 @@ class CustomQtBBoxControls(QtShapesControls):
             {"button": self.move_back_button, "shortcut": "napari:move_shapes_selection_to_back"},
             {"button": self.transform_button, "shortcut": "napari:activate_shapes_transform_mode"},
             {"button": self.direct_button, "shortcut": "napari:activate_direct_mode"},
+            {"button": self.polyline_button, "shortcut": "napari:activate_add_polyline_mode"},
         ]
 
         for button in buttons_to_hide:
@@ -45,8 +59,6 @@ class CustomQtBBoxControls(QtShapesControls):
 
         # Reorder the remaining buttons to not have a sparse layout
         self.button_grid.addWidget(self.delete_button, 0, 1)
-        # self.button_grid.addWidget(self.select_button, 0, 1)
         self.button_grid.addWidget(self.rectangle_button, 0, 2)
-        # self.button_grid.addWidget(self.panzoom_button, 0, 3)
 
         self.rectangle_button.setChecked(True)
