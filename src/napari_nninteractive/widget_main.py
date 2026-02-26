@@ -170,6 +170,19 @@ class nnInteractiveWidget(LayerControls):
                 self._viewer.layers[self.scribble_layer_name].brush_size = self._scribble_brush_size
 
     # Inference Behaviour
+    def _bbox_to_half_open_intervals(self, data: np.ndarray) -> list[list[float]]:
+        """Convert a napari rectangle to backend-style half-open intervals."""
+        mins = np.min(data, axis=0).astype(float)
+        maxs = np.max(data, axis=0).astype(float)
+
+        # BBoxes are interpreted as half-open intervals in nnInteractive.
+        # If an axis is collapsed (common for the fixed axis of a 2D view),
+        # expand it to one voxel so the interval remains non-empty.
+        # The upper bound may exceed image size by 1 (safe with Python slicing).
+        collapsed = mins == maxs
+        maxs[collapsed] = maxs[collapsed] + 1.0
+
+        return [[mins[i], maxs[i]] for i in range(len(mins))]
 
     def add_interaction(self):
         _index = self.interaction_button.index
@@ -192,10 +205,7 @@ class nnInteractiveWidget(LayerControls):
                     self._viewer.layers[self.point_layer_name].refresh(force=True)
                     self.session.add_point_interaction(data, _prompt, _auto_run)
                 elif _index == 1:
-                    # add_bbox_interaction expects [[xmin, xmax], [ymin, ymax], [zmin, zmax]]
-                    _min = np.min(data, axis=0)
-                    _max = np.max(data, axis=0)
-                    bbox = [[_min[0], _max[0]], [_min[1], _max[1]], [_min[2], _max[2]]]
+                    bbox = self._bbox_to_half_open_intervals(data)
                     self.session.add_bbox_interaction(bbox, _prompt, _auto_run)
                 elif _index == 2:
                     self.session.add_scribble_interaction(data, _prompt, _auto_run)
