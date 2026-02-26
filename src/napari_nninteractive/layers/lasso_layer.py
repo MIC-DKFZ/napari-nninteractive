@@ -143,7 +143,8 @@ class LassoLayer(BaseLayerClass, Shapes):
         ind = self._data_view._z_order[::-1][0]
         polygon = self._data_view.shapes[ind]
         dim_not_displayed = int(polygon.dims_not_displayed[0])
-        slice_id = int(self._data_view.slice_key[0])
+        slice_id = int(np.rint(float(self._data_view.slice_key[0])))
+        slice_id = int(np.clip(slice_id, 0, labels_shape[dim_not_displayed] - 1))
 
         # Check if the shape has more than 2 dimensions (3D case)
         if polygon.data.shape[1] > 2:

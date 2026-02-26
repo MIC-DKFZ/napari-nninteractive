@@ -208,7 +208,8 @@ class nnInteractiveWidget(LayerControls):
                     bbox = self._bbox_to_half_open_intervals(data)
                     self.session.add_bbox_interaction(bbox, _prompt, _auto_run)
                 elif _index == 2:
-                    self.session.add_scribble_interaction(data, _prompt, _auto_run)
+                    crop_3d, bbox = data
+                    self.session.add_scribble_interaction(crop_3d, _prompt, _auto_run, interaction_bbox=bbox)
                 elif _index == 3:
                     crop_3d, bbox = data
                     self.session.add_lasso_interaction(crop_3d, _prompt, _auto_run, interaction_bbox=bbox)
