@@ -130,12 +130,14 @@ class LassoLayer(BaseLayerClass, Shapes):
 
     def get_last(self) -> Any:
         """
-        Retrieves the last shape data added to the layer.
+        Retrieves the last shape data as a tight 2D crop (wrapped in a singleton 3D array)
+        together with its 3D bounding box, for efficient lasso interaction.
 
         Returns:
-            Any: The data of the last added shape.
+            tuple: (crop_3d, bbox) where crop_3d is a uint8 array of shape
+                   (1-if-not-displayed-is-0, crop_h, crop_w) and bbox is
+                   [[z0,z1],[y0,y1],[x0,x1]] matching the crop.
         """
-
         labels_shape = self._shape
 
         ind = self._data_view._z_order[::-1][0]
@@ -149,14 +151,25 @@ class LassoLayer(BaseLayerClass, Shapes):
         else:
             polygon_2d = polygon.data
 
-        slice_shape = np.delete(labels_shape, dim_not_displayed)
+        slice_shape = np.delete(np.array(labels_shape), dim_not_displayed)
+
+        # Compute tight 2D bounding box of polygon vertices
+        lo = np.floor(polygon_2d.min(axis=0)).astype(int)
+        hi = np.ceil(polygon_2d.max(axis=0)).astype(int) + 1
+        lo = np.clip(lo, 0, slice_shape - 1)
+        hi = np.clip(hi, lo + 1, slice_shape)  # ensure at least 1 pixel
 
         transformed_shape = napari.layers.shapes._shapes_models.polygon.Polygon(polygon_2d)
-        mask_slice = transformed_shape.to_mask(slice_shape, zoom_factor=1, offset=(0, 0)).astype(
-            np.uint8
-        )
-        mask = np.zeros(labels_shape, dtype=np.uint8)
+        mask_crop = transformed_shape.to_mask(
+            (hi[0] - lo[0], hi[1] - lo[1]), zoom_factor=1, offset=(lo[0], lo[1])
+        ).astype(np.uint8)
 
-        mask[(slice(None),) * dim_not_displayed + (slice_id,)] = mask_slice
+        crop_3d = np.expand_dims(mask_crop, axis=dim_not_displayed)
 
-        return mask
+        displayed_dims = [d for d in range(3) if d != dim_not_displayed]
+        bbox = [[0, 0], [0, 0], [0, 0]]
+        bbox[dim_not_displayed] = [slice_id, slice_id + 1]
+        bbox[displayed_dims[0]] = [int(lo[0]), int(hi[0])]
+        bbox[displayed_dims[1]] = [int(lo[1]), int(hi[1])]
+
+        return (crop_3d, bbox)
