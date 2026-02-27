@@ -75,6 +75,7 @@ class nnInteractiveWidget(LayerControls):
                 torch_n_threads=os.cpu_count(),
                 verbose=False,
                 do_autozoom=self.propagate_ckbx.isChecked(),
+                use_in_mem_compression=self.interaction_compression_ckbx.isChecked(),
             )
 
             self.session.initialize_from_trained_model_folder(
@@ -114,6 +115,9 @@ class nnInteractiveWidget(LayerControls):
         """Reset the current sessions interaction but keep the session itself"""
         super().on_image_selected()
         if self.session is not None:
+            # Image changes reuse the existing inference session, so compression
+            # settings cannot be applied until full reinitialization.
+            self.interaction_compression_ckbx.setEnabled(False)
             self.session.reset_interactions()
 
     def on_reset_interactions(self):
