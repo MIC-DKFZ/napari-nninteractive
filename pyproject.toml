@@ -27,6 +27,7 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "torch",
+    "napari",
     "numpy",
     "qtpy",
     "napari-nifti",
@@ -45,6 +46,7 @@ testing = [
     "napari",
     "pyqt5",
 ]
+all = ["napari[all]"]
 
 [project.entry-points."napari.manifest"]
 napari-nninteractive = "napari_nninteractive:napari.yaml"
