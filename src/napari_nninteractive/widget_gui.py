@@ -144,7 +144,7 @@ class BaseGUI(QWidget):
         self.interaction_compression_ckbx = setup_checkbox(
             _layout,
             "Interaction Compression",
-            False,
+            True,
         )
 
         _group_box.setLayout(_layout)
