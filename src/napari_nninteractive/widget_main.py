@@ -84,7 +84,7 @@ class nnInteractiveWidget(LayerControls):
                 "checkpoint_final.pth",
             )
 
-        _data = np.array(self._viewer.layers[self.session_cfg["name"]].data)
+        _data = self._viewer.layers[self.session_cfg["name"]].data
         _data = _data[np.newaxis, ...]
 
         if self.source_cfg["ndim"] == 2:
