@@ -75,6 +75,9 @@ class BaseGUI(QWidget):
         self.init_button.setEnabled(True)
         self.interaction_compression_ckbx.setEnabled(True)
 
+        # Reset interaction capabilities until a checkpoint is loaded.
+        self._set_interaction_button_support({0: True, 1: True, 2: True, 3: True})
+
         self.reset_button.setEnabled(False)
         self.instance_aggregation_ckbx.setEnabled(False)
         self.prompt_button.setEnabled(False)
@@ -91,6 +94,22 @@ class BaseGUI(QWidget):
         self.load_mask_btn.setEnabled(False)
         self.add_button.setEnabled(False)
         self.add_ckbx.setEnabled(False)
+
+    def _set_interaction_button_support(self, supported: dict[int, bool]) -> None:
+        """Enable/disable interaction tool buttons and keep a valid active selection."""
+        enabled_indices = []
+        for idx, button in enumerate(self.interaction_button.buttons):
+            is_enabled = bool(supported.get(idx, True))
+            button.setEnabled(is_enabled)
+            if is_enabled:
+                enabled_indices.append(idx)
+
+        if not enabled_indices:
+            return
+
+        if self.interaction_button.index not in enabled_indices:
+            self.interaction_button._uncheck()
+            self.interaction_button._check(enabled_indices[0])
 
     def _lock_session(self):
         """Locks the session, disabling model and image selection, and enabling control buttons."""

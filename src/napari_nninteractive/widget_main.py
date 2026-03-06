@@ -84,6 +84,16 @@ class nnInteractiveWidget(LayerControls):
                 "checkpoint_final.pth",
             )
 
+        # Enable only interaction tools supported by the loaded checkpoint.
+        self._set_interaction_button_support(
+            {
+                0: self.session._is_interaction_supported("points"),
+                1: self.session._is_interaction_supported("bbox2d"),
+                2: self.session._is_interaction_supported("scribble"),
+                3: self.session._is_interaction_supported("lasso"),
+            }
+        )
+
         _data = self._viewer.layers[self.session_cfg["name"]].data
         _data = _data[np.newaxis, ...]
 
