@@ -73,7 +73,6 @@ class BaseGUI(QWidget):
     def _unlock_session(self):
         """Unlocks the session, enabling model and image selection, and initializing controls."""
         self.init_button.setEnabled(True)
-        self.interaction_compression_ckbx.setEnabled(True)
 
         # Reset interaction capabilities until a checkpoint is loaded.
         self._set_interaction_button_support({0: True, 1: True, 2: True, 3: True})
@@ -114,7 +113,6 @@ class BaseGUI(QWidget):
     def _lock_session(self):
         """Locks the session, disabling model and image selection, and enabling control buttons."""
         self.init_button.setEnabled(False)
-        self.interaction_compression_ckbx.setEnabled(False)
 
         self.reset_button.setEnabled(True)
         self.instance_aggregation_ckbx.setEnabled(True)
@@ -160,11 +158,6 @@ class BaseGUI(QWidget):
             _boxlayout, "", "delete_shape", self._viewer.theme, function=_reset_local_ckpt_lineedit
         )
         btn.setFixedWidth(30)
-        self.interaction_compression_ckbx = setup_checkbox(
-            _layout,
-            "Interaction Compression",
-            True,
-        )
 
         _group_box.setLayout(_layout)
         return _group_box
