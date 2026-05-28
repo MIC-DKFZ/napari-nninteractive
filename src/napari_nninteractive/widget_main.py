@@ -265,10 +265,14 @@ class nnInteractiveWidget(LayerControls):
 
     def _release_session(self) -> None:
         """Best-effort lease release. Idempotent and safe to call during shutdown
-        (does not touch Qt widgets, since they may already be torn down)."""
-        if self.session is not None:
+        (does not touch Qt widgets, since they may already be torn down).
+
+        Only remote sessions hold a server-side lease and expose close();
+        local sessions have nothing to release."""
+        close = getattr(self.session, "close", None)
+        if close is not None:
             try:
-                self.session.close()
+                close()
             except Exception as e:  # noqa: BLE001
                 # Don't swallow silently: shutdown bugs are otherwise invisible.
                 print(f"[napari-nninteractive] lease release failed: {e!r}")
