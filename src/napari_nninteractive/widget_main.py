@@ -191,10 +191,11 @@ class nnInteractiveWidget(LayerControls):
         try:
             import httpx
             from nnInteractive.inference.remote import nnInteractiveRemoteInferenceSession
-        except ImportError:
+        except ImportError as e:
             self.remote_status_label.setText(
-                "client extra missing: pip install 'nnInteractive[client]'"
+                "Missing dependency, see console output for more information."
             )
+            print(e)
             return
 
         api_key = self.api_key_edit.text() or None
