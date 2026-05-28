@@ -12,6 +12,7 @@ from napari_toolkit.widgets import (
     setup_label,
     setup_layerselect,
     setup_lineedit,
+    setup_pushbutton,
     setup_spinbox,
     setup_vswitch,
 )
@@ -204,17 +205,15 @@ class BaseGUI(QWidget):
         )
         self.api_key_edit.setEchoMode(QLineEdit.Password)
 
-        test_btn = setup_iconbutton(
+        self.connect_btn = setup_pushbutton(
             _key_layout,
-            "Test",
-            "right_arrow",
-            self._viewer.theme,
-            function=self.on_test_connection,
-            tooltips="Probe the server with /healthz and /capabilities",
+            "Connect",
+            function=self.on_connect_toggle,
+            tooltips="Claim a session on the nninteractive-server",
         )
-        test_btn.setFixedWidth(70)
+        self.connect_btn.setFixedWidth(110)
 
-        self.remote_status_label = QLabel("not tested")
+        self.remote_status_label = QLabel("not connected")
         self.remote_status_label.setWordWrap(True)
         _remote_layout.addWidget(self.remote_status_label)
 
@@ -457,8 +456,8 @@ class BaseGUI(QWidget):
     def on_mode_switched(self, *args, **kwargs) -> None:
         """Placeholder for switching between local and remote inference modes."""
 
-    def on_test_connection(self, *args, **kwargs) -> None:
-        """Placeholder for testing connectivity to the remote server."""
+    def on_connect_toggle(self, *args, **kwargs) -> None:
+        """Placeholder for claiming or releasing a remote session."""
 
     def on_remote_settings_changed(self, *args, **kwargs) -> None:
         """Placeholder for handling changes to remote URL/API key fields."""
