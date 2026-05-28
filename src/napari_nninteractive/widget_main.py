@@ -11,6 +11,7 @@ from batchgenerators.utilities.file_and_folder_operations import join, load_json
 from napari.utils.notifications import show_warning
 from napari.viewer import Viewer
 from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
+from qtpy.QtCore import QEvent
 from qtpy.QtWidgets import QApplication, QWidget
 
 from napari_nninteractive.widget_controls import LayerControls
@@ -52,6 +53,23 @@ class nnInteractiveWidget(LayerControls):
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._release_session)
+
+        # Catch the napari main window's close at the source via event
+        # filter. This is the most reliable hook: it fires synchronously
+        # when the user clicks the X, before the dock-widget teardown.
+        with contextlib.suppress(Exception):
+            qt_window = self._viewer.window._qt_window
+            qt_window.installEventFilter(self)
+            self._napari_qt_window = qt_window
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt API
+        if (
+            getattr(self, "_napari_qt_window", None) is not None
+            and obj is self._napari_qt_window
+            and event.type() == QEvent.Close
+        ):
+            self._release_session()
+        return super().eventFilter(obj, event)
 
     def _unlock_session(self):
         """Same as BaseGUI, but keep Initialize disabled until Connect succeeds in remote mode."""
@@ -249,8 +267,11 @@ class nnInteractiveWidget(LayerControls):
         """Best-effort lease release. Idempotent and safe to call during shutdown
         (does not touch Qt widgets, since they may already be torn down)."""
         if self.session is not None:
-            with contextlib.suppress(Exception):
+            try:
                 self.session.close()
+            except Exception as e:  # noqa: BLE001
+                # Don't swallow silently: shutdown bugs are otherwise invisible.
+                print(f"[napari-nninteractive] lease release failed: {e!r}")
         self.session = None
         self._remote_connected = False
 
