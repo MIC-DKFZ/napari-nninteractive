@@ -121,14 +121,17 @@ napari demo_data/liver_145_0000.nii.gz -w napari-nninteractive
 
 ## Remote inference (server / client)
 
-If the machine you run napari on doesn't have a powerful enough GPU, you can run the model on a remote machine and drive it from napari over the network. One server hosts the model and serves multiple napari clients; each client gets its own independent session (image, prompts, segmentation), while the model weights are loaded once and shared.
+If the machine you run napari on doesn't have a powerful enough GPU (or if you are running this on a MAC), you can 
+run the model on a remote machine and drive it from napari over the network. One server hosts the model and serves 
+multiple napari clients; each client gets its own independent session (image, prompts, segmentation), while the 
+model weights are loaded once and shared.
 
 ### On the GPU machine — start the server
 
 ```bash
 nninteractive-server \
     --model-dir /path/to/checkpoint_folder \
-    --fold all \
+    --fold 0 \
     --host 0.0.0.0 --port 1527 \
     --max-sessions 4 \
     --api-key "$(openssl rand -hex 32)"
