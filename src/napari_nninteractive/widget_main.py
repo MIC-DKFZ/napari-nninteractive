@@ -83,7 +83,17 @@ class nnInteractiveWidget(LayerControls):
                 "checkpoint_final.pth",
             )
 
-        _data = np.array(self._viewer.layers[self.session_cfg["name"]].data)
+        # Enable only interaction tools supported by the loaded checkpoint.
+        self._set_interaction_button_support(
+            {
+                0: self.session._is_interaction_supported("points"),
+                1: self.session._is_interaction_supported("bbox2d"),
+                2: self.session._is_interaction_supported("scribble"),
+                3: self.session._is_interaction_supported("lasso"),
+            }
+        )
+
+        _data = self._viewer.layers[self.session_cfg["name"]].data
         _data = _data[np.newaxis, ...]
 
         if self.source_cfg["ndim"] == 2:
@@ -208,9 +218,11 @@ class nnInteractiveWidget(LayerControls):
                     bbox = self._bbox_to_half_open_intervals(data)
                     self.session.add_bbox_interaction(bbox, _prompt, _auto_run)
                 elif _index == 2:
-                    self.session.add_scribble_interaction(data, _prompt, _auto_run)
+                    crop_3d, bbox = data
+                    self.session.add_scribble_interaction(crop_3d, _prompt, _auto_run, interaction_bbox=bbox)
                 elif _index == 3:
-                    self.session.add_lasso_interaction(data, _prompt, _auto_run)
+                    crop_3d, bbox = data
+                    self.session.add_lasso_interaction(crop_3d, _prompt, _auto_run, interaction_bbox=bbox)
 
                 self._viewer.layers[self.label_layer_name].refresh()
 

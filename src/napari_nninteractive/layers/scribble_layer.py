@@ -22,6 +22,8 @@ class ScribbleLayer(BaseLayerClass, Labels):
         }
 
         self._is_free = False
+        self._last_dim_not_displayed = None
+        self._last_slice_id = None
         self.mouse_drag_callbacks.append(self.on_draw)
 
     def replace_color(self, _color) -> None:
@@ -61,6 +63,11 @@ class ScribbleLayer(BaseLayerClass, Labels):
         Commits the current staged history for the layer and marks the action as finished.
         """
         super()._commit_staged_history()
+        dim = int(self._slice_input.not_displayed[0])
+        self._last_dim_not_displayed = dim
+        sid = int(np.rint(float(self._data_slice.point[dim])))
+        sid = int(np.clip(sid, 0, self.data.shape[dim] - 1))
+        self._last_slice_id = sid
         self._is_free = False
         self.events.finished(action=ActionType.ADDED, value="ADD")
 
@@ -83,11 +90,41 @@ class ScribbleLayer(BaseLayerClass, Labels):
             3: self.colors_set[1],
         }
 
-    def get_last(self) -> None:
+    def get_last(self):
         """
-        Retrieves a binary mask of the last scribble interaction.
+        Retrieves a small 3D crop of the last scribble interaction together with its bounding box.
 
         Returns:
-            np.ndarray: A binary array where 1 indicates the last scribble interaction.
+            tuple[np.ndarray, list[list[int]]] | None:
+                crop_3d – uint8 array of shape (1, H, W) / (H, 1, W) / (H, W, 1) containing
+                           only the painted voxels within the tight bounding box of the stroke.
+                bbox     – [[z0,z1],[y0,y1],[x0,x1]] half-open voxel intervals.
+            None if no slice has been recorded yet or the slice is empty.
         """
-        return (self.data == 1).astype(np.uint8)
+        if self._last_slice_id is None:
+            return None
+
+        dim = self._last_dim_not_displayed
+        sid = self._last_slice_id
+
+        idx = [slice(None)] * 3
+        idx[dim] = sid
+        slice_2d = self.data[tuple(idx)]  # 2D view, no copy
+
+        ij = np.argwhere(slice_2d == 1)
+        if len(ij) == 0:
+            return None
+
+        lo = ij.min(axis=0)
+        hi = ij.max(axis=0) + 1
+
+        crop_2d = (slice_2d[lo[0] : hi[0], lo[1] : hi[1]] == 1).astype(np.uint8)
+        crop_3d = np.expand_dims(crop_2d, axis=dim)
+
+        displayed_dims = [d for d in range(3) if d != dim]
+        bbox = [[0, 0], [0, 0], [0, 0]]
+        bbox[dim] = [sid, sid + 1]
+        bbox[displayed_dims[0]] = [int(lo[0]), int(hi[0])]
+        bbox[displayed_dims[1]] = [int(lo[1]), int(hi[1])]
+
+        return (crop_3d, bbox)
