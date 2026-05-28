@@ -11,7 +11,7 @@ from batchgenerators.utilities.file_and_folder_operations import join, load_json
 from napari.utils.notifications import show_warning
 from napari.viewer import Viewer
 from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import QApplication, QWidget
 
 from napari_nninteractive.widget_controls import LayerControls
 
@@ -45,16 +45,28 @@ class nnInteractiveWidget(LayerControls):
         self.session = None
         self._viewer.dims.events.order.connect(self.on_axis_change)
 
+        # Belt-and-suspenders lease release on shutdown. closeEvent on this
+        # widget does NOT fire reliably when napari quits (the dock widget
+        # tree is destroyed without per-child closeEvent), and the Ctrl+Q
+        # path raises SystemExit via quit(), bypassing Qt shutdown entirely.
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._release_session)
+
     def _unlock_session(self):
         """Same as BaseGUI, but keep Initialize disabled until Connect succeeds in remote mode."""
         super()._unlock_session()
         if self._remote_mode and not self._remote_connected:
             self.init_button.setEnabled(False)
 
+    def _close(self):
+        """Ctrl+Q handler: release the lease before quit() raises SystemExit."""
+        self._release_session()
+        super()._close()
+
     def closeEvent(self, event):  # noqa: N802 - Qt API
         """Release the remote lease when the widget is being torn down."""
-        if self._remote_connected:
-            self._disconnect_remote()
+        self._release_session()
         super().closeEvent(event)
 
     # Event Handlers
@@ -233,13 +245,18 @@ class nnInteractiveWidget(LayerControls):
         # Connecting unlocks the Initialize button (via the override).
         self._unlock_session()
 
-    def _disconnect_remote(self) -> None:
-        """Release the lease and reset connection state. Idempotent."""
+    def _release_session(self) -> None:
+        """Best-effort lease release. Idempotent and safe to call during shutdown
+        (does not touch Qt widgets, since they may already be torn down)."""
         if self.session is not None:
             with contextlib.suppress(Exception):
                 self.session.close()
         self.session = None
         self._remote_connected = False
+
+    def _disconnect_remote(self) -> None:
+        """Release the lease and reset connection state. Idempotent."""
+        self._release_session()
         self.connect_btn.setText("Connect")
         self.remote_status_label.setText("not connected")
 
