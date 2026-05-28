@@ -16,7 +16,7 @@ from napari_toolkit.widgets import (
     setup_vswitch,
 )
 from napari_toolkit.widgets.buttons.icon_button import setup_icon
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QSettings, Qt
 from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (
     QGroupBox,
@@ -47,6 +47,7 @@ class BaseGUI(QWidget):
         self._viewer = viewer
         self.session_cfg = None
         self._remote_mode = False
+        self._settings = QSettings("MIC-DKFZ", "napari-nninteractive")
 
         _main_layout = QVBoxLayout()
         self.setLayout(_main_layout)
@@ -219,6 +220,29 @@ class BaseGUI(QWidget):
 
         # Default: Local visible, Remote hidden
         self.remote_container.setVisible(False)
+
+        # Restore last-used values (blocking signals so we don't trigger
+        # on_model_selected / on_remote_settings_changed before the rest of
+        # the GUI has been built).
+        saved_local = self._settings.value("local_checkpoint", "", type=str)
+        if saved_local:
+            self.model_selection_local.blockSignals(True)
+            self.model_selection_local.setText(saved_local)
+            self.model_selection_local.blockSignals(False)
+
+        saved_url = self._settings.value("server_url", "", type=str)
+        if saved_url:
+            self.server_url_edit.blockSignals(True)
+            self.server_url_edit.setText(saved_url)
+            self.server_url_edit.blockSignals(False)
+
+        # Persist on every edit. API key is intentionally NOT persisted.
+        self.model_selection_local.textChanged.connect(
+            lambda t: self._settings.setValue("local_checkpoint", t)
+        )
+        self.server_url_edit.textChanged.connect(
+            lambda t: self._settings.setValue("server_url", t)
+        )
 
         _group_box.setLayout(_layout)
         return _group_box
