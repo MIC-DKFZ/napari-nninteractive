@@ -219,21 +219,29 @@ class LayerControls(BaseGUI):
         if image_name == "":
             raise ValueError("No Image Layer selected")
 
-        model_name = self.model_selection.currentText()
-        model_name_local = self.model_selection_local.text()
-        if model_name_local != "" and Path(model_name_local).exists():
-            # Use Local Checkpoint
-            model_name = Path(model_name_local).name
-            self.checkpoint_path = model_name_local
+        if self._remote_mode:
+            # Remote: server already loaded the checkpoint at startup.
+            model_name = "remote"
+            self.checkpoint_path = None
+            print(f"Using remote model at: {self.server_url_edit.text().strip()}")
         else:
-            # Download Checkpoint
-            repo_id = "nnInteractive/nnInteractive"
-            force_download = False
-            download_path = snapshot_download(
-                repo_id=repo_id, allow_patterns=[f"{model_name}/*"], force_download=force_download
-            )
-            self.checkpoint_path = Path(download_path).joinpath(model_name)
-        print(f"Using Model {model_name} at : {self.checkpoint_path}")
+            model_name = self.model_selection.currentText()
+            model_name_local = self.model_selection_local.text()
+            if model_name_local != "" and Path(model_name_local).exists():
+                # Use Local Checkpoint
+                model_name = Path(model_name_local).name
+                self.checkpoint_path = model_name_local
+            else:
+                # Download Checkpoint
+                repo_id = "nnInteractive/nnInteractive"
+                force_download = False
+                download_path = snapshot_download(
+                    repo_id=repo_id,
+                    allow_patterns=[f"{model_name}/*"],
+                    force_download=force_download,
+                )
+                self.checkpoint_path = Path(download_path).joinpath(model_name)
+            print(f"Using Model {model_name} at : {self.checkpoint_path}")
 
         # --- DATA HANDLING --- #
         # Get everything we need from the image layer

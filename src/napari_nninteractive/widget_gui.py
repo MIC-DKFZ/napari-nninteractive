@@ -21,6 +21,8 @@ from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
+    QLabel,
+    QLineEdit,
     QShortcut,
     QSizePolicy,
     QVBoxLayout,
@@ -44,6 +46,7 @@ class BaseGUI(QWidget):
         self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self._viewer = viewer
         self.session_cfg = None
+        self._remote_mode = False
 
         _main_layout = QVBoxLayout()
         self.setLayout(_main_layout)
@@ -138,14 +141,31 @@ class BaseGUI(QWidget):
         """Initializes the model selection as a combo box."""
         _group_box, _layout = setup_vgroupbox(text="Model Selection:")
 
+        # Local | Remote mode switch
+        self.mode_switch = setup_hswitch(
+            _layout,
+            options=["Local", "Remote"],
+            function=self.on_mode_switched,
+            default=0,
+            fixed_color="rgb(0,100, 167)",
+            tooltips="Run inference locally or on a remote nninteractive-server",
+        )
+
+        # --- Local container --- #
+        self.local_container = QWidget()
+        _local_layout = QVBoxLayout()
+        _local_layout.setContentsMargins(0, 0, 0, 0)
+        self.local_container.setLayout(_local_layout)
+        _layout.addWidget(self.local_container)
+
         model_options = ["nnInteractive_v1.0"]
 
         self.model_selection = setup_combobox(
-            _layout, options=model_options, function=self.on_model_selected
+            _local_layout, options=model_options, function=self.on_model_selected
         )
 
         _boxlayout = QHBoxLayout()
-        _layout.addLayout(_boxlayout)
+        _local_layout.addLayout(_boxlayout)
         self.model_selection_local = setup_lineedit(
             _boxlayout, placeholder="Use Local Checkpoint...", function=self.on_model_selected
         )
@@ -158,6 +178,47 @@ class BaseGUI(QWidget):
             _boxlayout, "", "delete_shape", self._viewer.theme, function=_reset_local_ckpt_lineedit
         )
         btn.setFixedWidth(30)
+
+        # --- Remote container --- #
+        self.remote_container = QWidget()
+        _remote_layout = QVBoxLayout()
+        _remote_layout.setContentsMargins(0, 0, 0, 0)
+        self.remote_container.setLayout(_remote_layout)
+        _layout.addWidget(self.remote_container)
+
+        self.server_url_edit = setup_lineedit(
+            _remote_layout,
+            placeholder="http://gpu-box:1527",
+            function=self.on_remote_settings_changed,
+            tooltips="URL of the nninteractive-server, including scheme and port",
+        )
+
+        _key_layout = QHBoxLayout()
+        _remote_layout.addLayout(_key_layout)
+        self.api_key_edit = setup_lineedit(
+            _key_layout,
+            placeholder="API key (optional)",
+            function=self.on_remote_settings_changed,
+            tooltips="Bearer token; falls back to NN_INTERACTIVE_API_KEY env var",
+        )
+        self.api_key_edit.setEchoMode(QLineEdit.Password)
+
+        test_btn = setup_iconbutton(
+            _key_layout,
+            "Test",
+            "right_arrow",
+            self._viewer.theme,
+            function=self.on_test_connection,
+            tooltips="Probe the server with /healthz and /capabilities",
+        )
+        test_btn.setFixedWidth(70)
+
+        self.remote_status_label = QLabel("not tested")
+        self.remote_status_label.setWordWrap(True)
+        _remote_layout.addWidget(self.remote_status_label)
+
+        # Default: Local visible, Remote hidden
+        self.remote_container.setVisible(False)
 
         _group_box.setLayout(_layout)
         return _group_box
@@ -368,6 +429,15 @@ class BaseGUI(QWidget):
         """When a new model is selected reset layers and session (cfg + gui)"""
         self._clear_layers()
         self._unlock_session()
+
+    def on_mode_switched(self, *args, **kwargs) -> None:
+        """Placeholder for switching between local and remote inference modes."""
+
+    def on_test_connection(self, *args, **kwargs) -> None:
+        """Placeholder for testing connectivity to the remote server."""
+
+    def on_remote_settings_changed(self, *args, **kwargs) -> None:
+        """Placeholder for handling changes to remote URL/API key fields."""
 
     def on_reset_interactions(self):
         """Reset only the current interaction"""

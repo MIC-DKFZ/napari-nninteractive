@@ -1,3 +1,4 @@
+import contextlib
 import os
 import warnings
 from pathlib import Path
@@ -37,59 +38,27 @@ class nnInteractiveWidget(LayerControls):
         This method sets up the nnInteractiveInferenceSession, loading from a
         pre-trained model folder and initializing properties based on the viewer layer.
         """
+        # Build the remote session before super() so connection failures don't
+        # leave the UI in a half-initialized state (locked + label layer added).
+        if self.session is None and self._remote_mode:
+            remote_session = self._build_remote_session()
+            if remote_session is None:
+                return
+            self.session = remote_session
+
         super().on_init(*args, **kwargs)
+
         if self.session is None:
-            # Get inference class from Checkpoint
-            if Path(self.checkpoint_path).joinpath("inference_session_class.json").is_file():
-                inference_class = load_json(
-                    Path(self.checkpoint_path).joinpath("inference_session_class.json")
-                )
-                if isinstance(inference_class, dict):
-                    inference_class = inference_class["inference_class"]
-            else:
-                inference_class = "nnInteractiveInferenceSession"
-
-            inference_class = recursive_find_python_class(
-                join(nnInteractive.__path__[0], "inference"),
-                inference_class,
-                "nnInteractive.inference",
-            )
-
-            # CPU Fallback if noc Cuda is available
-            if torch.cuda.is_available():
-                device = torch.device("cuda:0")
-            else:
-                show_warning(
-                    "Cuda is not available. Using CPU instead. This will result in longer runtimes and additionally auto-zoom will be disabled for runtime reasons"
-                )
-
-                device = torch.device("cpu")
-                self.propagate_ckbx.setChecked(False)
-
-            # device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-
-            # Initialize the Session
-            self.session = inference_class(
-                device=device,  # can also be cpu or mps. CPU not recommended
-                use_torch_compile=False,
-                torch_n_threads=os.cpu_count(),
-                verbose=False,
-                do_autozoom=self.propagate_ckbx.isChecked(),
-            )
-
-            self.session.initialize_from_trained_model_folder(
-                self.checkpoint_path,
-                0,
-                "checkpoint_final.pth",
-            )
+            self._construct_local_session()
 
         # Enable only interaction tools supported by the loaded checkpoint.
+        supported = self.session.supported_interactions
         self._set_interaction_button_support(
             {
-                0: self.session._is_interaction_supported("points"),
-                1: self.session._is_interaction_supported("bbox2d"),
-                2: self.session._is_interaction_supported("scribble"),
-                3: self.session._is_interaction_supported("lasso"),
+                0: bool(supported.get("points", False)),
+                1: bool(supported.get("bbox2d", False)),
+                2: bool(supported.get("scribble", False)),
+                3: bool(supported.get("lasso", False)),
             }
         )
 
@@ -114,6 +83,164 @@ class nnInteractiveWidget(LayerControls):
         # Set the prompt type to positive
         self.prompt_button._uncheck()
         self.prompt_button._check(0)
+
+    def _construct_local_session(self) -> None:
+        """Construct the local inference session from self.checkpoint_path."""
+        # Get inference class from Checkpoint
+        if Path(self.checkpoint_path).joinpath("inference_session_class.json").is_file():
+            inference_class = load_json(
+                Path(self.checkpoint_path).joinpath("inference_session_class.json")
+            )
+            if isinstance(inference_class, dict):
+                inference_class = inference_class["inference_class"]
+        else:
+            inference_class = "nnInteractiveInferenceSession"
+
+        inference_class = recursive_find_python_class(
+            join(nnInteractive.__path__[0], "inference"),
+            inference_class,
+            "nnInteractive.inference",
+        )
+
+        # CPU Fallback if no Cuda is available
+        if torch.cuda.is_available():
+            device = torch.device("cuda:0")
+        else:
+            show_warning(
+                "Cuda is not available. Using CPU instead. This will result in longer runtimes and additionally auto-zoom will be disabled for runtime reasons"
+            )
+            device = torch.device("cpu")
+            self.propagate_ckbx.setChecked(False)
+
+        self.session = inference_class(
+            device=device,
+            use_torch_compile=False,
+            torch_n_threads=os.cpu_count(),
+            verbose=False,
+            do_autozoom=self.propagate_ckbx.isChecked(),
+        )
+
+        self.session.initialize_from_trained_model_folder(
+            self.checkpoint_path,
+            0,
+            "checkpoint_final.pth",
+        )
+
+    def _build_remote_session(self):
+        """Construct a remote session, mapping httpx errors to user-friendly warnings.
+
+        Returns the session on success, or None on any failure (warning already shown).
+        """
+        server_url = self.server_url_edit.text().strip()
+        if not server_url:
+            show_warning("Remote mode: please enter a server URL.")
+            return None
+
+        try:
+            import httpx
+            from nnInteractive.inference.remote import nnInteractiveRemoteInferenceSession
+        except ImportError:
+            show_warning(
+                "Remote mode requires the client extra. Run: "
+                "pip install 'nnInteractive[client]'"
+            )
+            return None
+
+        api_key = self.api_key_edit.text() or None
+        try:
+            session = nnInteractiveRemoteInferenceSession(
+                server_url=server_url, api_key=api_key
+            )
+        except httpx.ConnectError:
+            show_warning(f"Cannot reach {server_url}. Is the server running?")
+            return None
+        except httpx.ConnectTimeout:
+            show_warning(f"Timed out reaching {server_url}. Check the host/port.")
+            return None
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                show_warning("Server rejected the API key.")
+            elif "text/html" in e.response.headers.get("content-type", ""):
+                show_warning(
+                    "Server returned HTML - likely an HTTP proxy. "
+                    "Set NO_PROXY to include the server host."
+                )
+            else:
+                show_warning(
+                    f"Server error {e.response.status_code}: {e.response.text[:200]}"
+                )
+            return None
+        except Exception as e:  # noqa: BLE001
+            show_warning(f"Failed to connect to {server_url}: {e}")
+            return None
+
+        # Honor the current auto-zoom checkbox on the remote session too.
+        with contextlib.suppress(Exception):
+            session.set_do_autozoom(self.propagate_ckbx.isChecked())
+
+        self.remote_status_label.setText(f"connected ({server_url})")
+        return session
+
+    def on_test_connection(self) -> None:
+        """Probe the remote server and report status inline (no notifications)."""
+        server_url = self.server_url_edit.text().strip()
+        if not server_url:
+            self.remote_status_label.setText("enter a server URL")
+            return
+
+        try:
+            import httpx
+            from nnInteractive.inference.remote import nnInteractiveRemoteInferenceSession
+        except ImportError:
+            self.remote_status_label.setText(
+                "client extra missing: pip install 'nnInteractive[client]'"
+            )
+            return
+
+        api_key = self.api_key_edit.text() or None
+        session = None
+        try:
+            session = nnInteractiveRemoteInferenceSession(
+                server_url=server_url, api_key=api_key
+            )
+            if session.ping():
+                self.remote_status_label.setText(f"connected ({server_url})")
+            else:
+                self.remote_status_label.setText("ping failed")
+        except httpx.ConnectError:
+            self.remote_status_label.setText(f"cannot reach {server_url}")
+        except httpx.ConnectTimeout:
+            self.remote_status_label.setText(f"timed out reaching {server_url}")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                self.remote_status_label.setText("server rejected the API key")
+            elif "text/html" in e.response.headers.get("content-type", ""):
+                self.remote_status_label.setText(
+                    "server returned HTML (HTTP proxy?); set NO_PROXY"
+                )
+            else:
+                self.remote_status_label.setText(
+                    f"server error {e.response.status_code}"
+                )
+        except Exception as e:  # noqa: BLE001
+            self.remote_status_label.setText(f"error: {e}")
+        finally:
+            if session is not None:
+                with contextlib.suppress(Exception):
+                    session._http.close()
+
+    def on_remote_settings_changed(self, *args, **kwargs) -> None:
+        """User edited the URL or API key; invalidate any existing session."""
+        self.remote_status_label.setText("not tested")
+        # Defer to on_model_selected to clear layers + session and re-lock UI.
+        self.on_model_selected()
+
+    def on_mode_switched(self, *args, **kwargs) -> None:
+        """Toggle between Local and Remote inference modes."""
+        self._remote_mode = self.mode_switch.index == 1
+        self.local_container.setVisible(not self._remote_mode)
+        self.remote_container.setVisible(self._remote_mode)
+        self.on_model_selected()
 
     def on_model_selected(self):
         """Reset the current session completely"""

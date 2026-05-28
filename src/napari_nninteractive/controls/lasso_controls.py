@@ -1,6 +1,6 @@
+import napari
 from napari._qt.layer_controls.qt_shapes_controls import QtShapesControls
 from napari.utils.action_manager import action_manager
-import napari
 from packaging.version import Version
 
 

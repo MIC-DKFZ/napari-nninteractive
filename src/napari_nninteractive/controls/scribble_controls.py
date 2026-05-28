@@ -1,6 +1,6 @@
+import napari
 from napari._qt.layer_controls.qt_labels_controls import QtLabelsControls
 from napari.utils.action_manager import action_manager
-import napari
 from packaging.version import Version
 
 

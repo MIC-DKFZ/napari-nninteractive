@@ -1,5 +1,5 @@
-from napari._qt.layer_controls.qt_points_controls import QtPointsControls
 import napari
+from napari._qt.layer_controls.qt_points_controls import QtPointsControls
 from packaging.version import Version
 
 

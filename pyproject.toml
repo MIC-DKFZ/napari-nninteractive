@@ -45,6 +45,9 @@ testing = [
     "napari",
     "pyqt5",
 ]
+remote = [
+    "nnInteractive[client]",
+]
 
 [project.entry-points."napari.manifest"]
 napari-nninteractive = "napari_nninteractive:napari.yaml"
