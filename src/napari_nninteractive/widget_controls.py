@@ -335,14 +335,37 @@ class LayerControls(BaseGUI):
             self.session_cfg["affine"].scale
         )
 
-        # Create the target label array and layer
-        self._data_result = np.zeros(self.session_cfg["shape"], dtype=np.uint8)
+        # Decide whether to resume the previous segmentation. We only resume
+        # after a connection loss (flag set by _handle_session_expired) and only
+        # when the surviving label layer belongs to the *same* image layer object
+        # (identity, not merely the same shape, which would be brittle). The
+        # shape check is a cheap guard against a layer that no longer matches.
+        resume = (
+            getattr(self, "_resume_after_reconnect", False)
+            and self.label_layer_name in self._viewer.layers
+            and self._resume_image_layer is image_layer
+            and tuple(self._viewer.layers[self.label_layer_name].data.shape)
+            == tuple(self.session_cfg["shape"])
+        )
 
-        # Add Layer
-        self.object_index = 0
-        if self.label_layer_name in self._viewer.layers:
-            self._viewer.layers.remove(self.label_layer_name)
-        self.add_label_layer(self._data_result, self.label_layer_name)
+        if resume:
+            # Keep the existing label layer, its data, colormap and object_index
+            # so the user carries on where they left off. The target buffer must
+            # alias the layer data so the backend's writes remain visible.
+            self._data_result = self._viewer.layers[self.label_layer_name].data
+        else:
+            # Create the target label array and layer
+            self._data_result = np.zeros(self.session_cfg["shape"], dtype=np.uint8)
+            self.object_index = 0
+            if self.label_layer_name in self._viewer.layers:
+                self._viewer.layers.remove(self.label_layer_name)
+            self.add_label_layer(self._data_result, self.label_layer_name)
+
+        # Pin the resume to this image object so a later reconnect can verify it
+        # is the same image before resuming. _resuming is read by the subclass'
+        # on_init to seed the new session.
+        self._resume_image_layer = image_layer
+        self._resuming = resume
 
         # Lock the Session
         self._lock_session()

@@ -29,6 +29,18 @@ except ImportError:  # remote client extra not installed
         pass
 
 
+try:
+    import httpx
+
+    # A killed or unreachable server surfaces as a transport-level error
+    # (connection refused, timeouts, protocol errors) rather than a typed lease
+    # error. Treat those the same as an expired session so the Connect button
+    # resets and the segmentation is preserved for a reconnect.
+    _SESSION_LOST_ERRORS: tuple = (SessionExpiredError, httpx.TransportError)
+except ImportError:  # httpx ships with the remote client extra
+    _SESSION_LOST_ERRORS = (SessionExpiredError,)
+
+
 class nnInteractiveWidget(LayerControls):
     """
     A widget for the nnInteractive plugin in Napari that manages model inference sessions
@@ -44,6 +56,14 @@ class nnInteractiveWidget(LayerControls):
         self._remote_connected = False
         super().__init__(viewer, parent)
         self.session = None
+        # Resume-after-reconnect state. When a remote session is lost we keep
+        # the label layer and, on the next Initialize, seed the new session with
+        # it instead of starting from scratch. _resume_image_layer pins the
+        # resume to a specific image layer object (identity, not just shape) so a
+        # different image with the same shape can never be resumed by mistake.
+        self._resume_after_reconnect = False
+        self._resume_image_layer = None
+        self._resuming = False
         self._viewer.dims.events.order.connect(self.on_axis_change)
 
         # Belt-and-suspenders lease release on shutdown. closeEvent on this
@@ -125,9 +145,20 @@ class nnInteractiveWidget(LayerControls):
         try:
             self.session.set_image(_data, {"spacing": self.session_cfg["spacing"]})
             self.session.set_target_buffer(self._data_result)
-        except SessionExpiredError:
+            # Resuming after a reconnect: seed the fresh session with the
+            # segmentation we kept so the user continues refining the same
+            # object instead of starting over.
+            if self._resuming and np.any(self._data_result):
+                self.session.add_initial_seg_interaction(
+                    (self._data_result > 0).astype(np.uint8), run_prediction=False
+                )
+        except _SESSION_LOST_ERRORS:
             self._handle_session_expired()
             return
+
+        # Init succeeded; clear the resume state so a normal re-init starts fresh.
+        self._resume_after_reconnect = False
+        self._resuming = False
 
         if self._viewer.dims.not_displayed != ():
             self._scribble_brush_size = self.session.preferred_scribble_thickness[
@@ -205,7 +236,7 @@ class nnInteractiveWidget(LayerControls):
         except ServerAtCapacityError:
             self.remote_status_label.setText("server is full, try again later")
             return None
-        except SessionExpiredError:
+        except _SESSION_LOST_ERRORS:
             # Extremely unlikely at /claim time, but handle for completeness.
             self.remote_status_label.setText("server rejected the claim; try again")
             return None
@@ -286,12 +317,16 @@ class nnInteractiveWidget(LayerControls):
         self.remote_status_label.setText("not connected")
 
     def _handle_session_expired(self) -> None:
-        """Server-side lease is gone. Reset UI to 'needs Connect + Initialize'."""
+        """Server-side lease is gone. Keep the label layer so the user can
+        Connect again and resume refining: the next Initialize will seed the new
+        session with the surviving segmentation instead of discarding it."""
         show_warning(
-            "Server session expired. Please Connect again and re-initialize."
+            "Server session lost. Reconnect and re-initialize to continue "
+            "refining your segmentation."
         )
+        self._resume_after_reconnect = True
         self._disconnect_remote()
-        self.remote_status_label.setText("session expired")
+        self.remote_status_label.setText("session lost")
         self._clear_layers()
         self._unlock_session()
 
@@ -318,6 +353,11 @@ class nnInteractiveWidget(LayerControls):
         """Reset the current session completely"""
         super().on_model_selected()
         self.session = None
+        # A model/mode/server change is a genuine reset, not a reconnect:
+        # don't resume the previous segmentation. (on_mode_switched and
+        # on_remote_settings_changed both funnel through here.)
+        self._resume_after_reconnect = False
+        self._resume_image_layer = None
 
     def on_image_selected(self):
         """Reset the current sessions interaction but keep the session itself"""
@@ -325,7 +365,7 @@ class nnInteractiveWidget(LayerControls):
         if self.session is not None:
             try:
                 self.session.reset_interactions()
-            except SessionExpiredError:
+            except _SESSION_LOST_ERRORS:
                 self._handle_session_expired()
 
     def on_reset_interactions(self):
@@ -335,7 +375,7 @@ class nnInteractiveWidget(LayerControls):
         if self.session is not None:
             try:
                 self.session.reset_interactions()
-            except SessionExpiredError:
+            except _SESSION_LOST_ERRORS:
                 self._handle_session_expired()
                 return
 
@@ -353,7 +393,7 @@ class nnInteractiveWidget(LayerControls):
         if self.session is not None:
             try:
                 self.session.reset_interactions()
-            except SessionExpiredError:
+            except _SESSION_LOST_ERRORS:
                 self._handle_session_expired()
                 return
 
@@ -369,11 +409,22 @@ class nnInteractiveWidget(LayerControls):
         self.on_interaction_selected()
         self.prompt_button._check(0)
 
+    def on_run(self):
+        """Manual Run button: predict against the (possibly remote) session and
+        refresh the label layer, treating a lost connection like session expiry."""
+        if self.session is not None:
+            try:
+                self.session._predict()
+            except _SESSION_LOST_ERRORS:
+                self._handle_session_expired()
+                return
+            self._viewer.layers[self.label_layer_name].refresh()
+
     def on_propagate_ckbx(self, *args, **kwargs):
         if self.session is not None:
             try:
                 self.session.set_do_autozoom(self.propagate_ckbx.isChecked())
-            except SessionExpiredError:
+            except _SESSION_LOST_ERRORS:
                 self._handle_session_expired()
 
     def on_axis_change(self, event: Any):
@@ -437,7 +488,7 @@ class nnInteractiveWidget(LayerControls):
                     elif _index == 3:
                         crop_3d, bbox = data
                         self.session.add_lasso_interaction(crop_3d, _prompt, _auto_run, interaction_bbox=bbox)
-                except SessionExpiredError:
+                except _SESSION_LOST_ERRORS:
                     self._handle_session_expired()
                     return
 
@@ -459,7 +510,7 @@ class nnInteractiveWidget(LayerControls):
                     self.session.add_initial_seg_interaction(
                         data.astype(np.uint8), run_prediction=self.auto_refine.isChecked()
                     )
-                except SessionExpiredError:
+                except _SESSION_LOST_ERRORS:
                     self._handle_session_expired()
                     return
                 self._viewer.layers[self.label_layer_name].refresh()
