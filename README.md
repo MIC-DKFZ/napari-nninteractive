@@ -42,7 +42,10 @@ Extensive benchmarking demonstrates that nnInteractive far surpasses existing me
 
 ### Prerequisites
 
-You need a Linux or Windows computer with a Nvidia GPU. 10GB of VRAM is recommended. Small objects should work with \<6GB.
+For **local** inference you need a Linux or Windows computer with an Nvidia GPU. 10GB of VRAM is recommended. Small objects should work with \<6GB.
+
+> [!TIP]
+> **On a Mac, or without a capable Nvidia GPU?** Use [**Remote inference**](#remote-inference-server--client) instead. nnInteractive relies heavily on 3D convolutions, which are prohibitively slow on Apple Silicon (MPS) and CPU hardware — running the model on a remote GPU and driving it from napari is the recommended, and often only practical, way to use nnInteractive on these machines. The napari client itself has no GPU requirements and runs anywhere; only the GPU server needs the hardware above.
 
 ##### 1. Create a virtual environment:
 
@@ -121,10 +124,13 @@ napari demo_data/liver_145_0000.nii.gz -w napari-nninteractive
 
 ## Remote inference (server / client)
 
-If the machine you run napari on doesn't have a powerful enough GPU (or if you are running this on a MAC), you can 
-run the model on a remote machine and drive it from napari over the network. One server hosts the model and serves 
-multiple napari clients; each client gets its own independent session (image, prompts, segmentation), while the 
-model weights are loaded once and shared.
+**This is the recommended way to run nnInteractive on a Mac or any machine without a capable Nvidia GPU.** nnInteractive
+depends heavily on 3D convolutions, which are prohibitively slow on Apple Silicon (MPS) and CPU — in practice, remote
+inference is the only usable option on those systems.
+
+You run the model on a remote machine and drive it from napari over the network. One server hosts the model and serves
+multiple napari clients; each client gets its own independent session (image, prompts, segmentation), while the
+model weights are loaded once and shared. The napari client has no GPU requirements, so it runs fine on a laptop or Mac.
 
 ### On the GPU machine — start the server
 
@@ -151,7 +157,7 @@ The model checkpoint is fixed by the server at startup, so the local checkpoint 
 
 ### Things to be aware of
 
-- **Idle timeout.** Server-side sessions are reaped after 10 minutes of inactivity (configurable on the server). If your session expires, the plugin will tell you to reconnect and redo your prompts — image, prompts, and current segmentation only exist on the server and cannot be restored.
+- **Lost connection or idle timeout.** Server-side sessions are reaped after 10 minutes of inactivity (configurable on the server), and a server that goes away (restart, crash, network drop) ends the session too. When this happens the plugin resets the **Connect** button and asks you to reconnect. **Your current segmentation is preserved** on the client: after you reconnect and click **Initialize** again, the image is re-uploaded and the segmentation is restored so you can keep refining where you left off. Only the in-progress prompt markers (the individual points/boxes/scribbles) need to be redone.
 - **Server full.** If all session slots are taken, Connect reports `server is full, try again later`. Retry shortly.
 - **Concurrent users.** Multiple researchers can use the same server independently. Predictions are serialized on the GPU, so heavy concurrent use makes individual predictions wait briefly — scale out by running one server per GPU.
 - **Corporate proxies.** If your client machine sets `HTTP_PROXY` / `HTTPS_PROXY`, add the server host to `NO_PROXY`, otherwise requests get intercepted and Connect will report an HTML/proxy error.
