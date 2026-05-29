@@ -32,7 +32,7 @@ dependencies = [
     "napari-nifti",
     "huggingface_hub",
     "hf_transfer",
-    "nnInteractive>=2.1.0",
+    "nnInteractive>=2.2.0",
     "napari_toolkit",
 ]
 
@@ -46,7 +46,7 @@ testing = [
     "pyqt5",
 ]
 remote = [
-    "nnInteractive[client]",
+    "nnInteractive[client]>=2.2.0",
 ]
 
 [project.entry-points."napari.manifest"]
