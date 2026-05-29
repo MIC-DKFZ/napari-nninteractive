@@ -181,6 +181,14 @@ class BaseGUI(QWidget):
         )
         btn.setFixedWidth(30)
 
+        self.use_torch_compile_ckbx = setup_checkbox(
+            _local_layout,
+            "use torch.compile",
+            False,
+            tooltips="If checked: enable torch.compile for local inference. The first prediction "
+            "will be slow while the model is compiled, but subsequent predictions will be faster.",
+        )
+
         # --- Remote container --- #
         self.remote_container = QWidget()
         _remote_layout = QVBoxLayout()

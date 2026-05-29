@@ -202,7 +202,7 @@ class nnInteractiveWidget(LayerControls):
 
         self.session = inference_class(
             device=device,
-            use_torch_compile=False,
+            use_torch_compile=self.use_torch_compile_ckbx.isChecked(),
             torch_n_threads=os.cpu_count(),
             verbose=False,
             do_autozoom=self.propagate_ckbx.isChecked(),
