@@ -1,0 +1,63 @@
+name: Publish to PyPI
+
+# Build an sdist + wheel and upload them to PyPI whenever a version tag is
+# pushed (e.g. `git tag v2.2.0 && git push origin v2.2.0`).
+#
+# The published version comes from `__version__` in
+# src/napari_nninteractive/__init__.py (pyproject.toml reads it via
+# tool.setuptools.dynamic), NOT from the tag. The "Verify tag matches package
+# version" step below fails the run if the tag and __version__ disagree, so you
+# can't accidentally publish a mismatched version.
+#
+# Authentication uses PyPI Trusted Publishing (OIDC) — no API token / secret is
+# stored in the repo. See the repo README / release docs for the one-time PyPI
+# setup. To use an API token instead, see the commented block at the bottom.
+#
+# NOTE: this supersedes the dormant `deploy` job in the `test_and_deploy` file,
+# which never ran because that file is missing the required `.yml` extension.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for PyPI Trusted Publishing (OIDC). This is what lets the job
+      # mint a short-lived token instead of using a stored secret.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches package version
+        run: |
+          PKG_VERSION="$(python -c "import re; print(re.search(r'__version__\s*=\s*[\"\x27]([^\"\x27]+)', open('src/napari_nninteractive/__init__.py').read()).group(1))")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "Tag: $TAG_VERSION   __version__: $PKG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' does not match __version__ '$PKG_VERSION'. Bump the version before tagging."
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # Trusted Publishing: no `with: password` needed.
+        #
+        # --- API-token alternative -------------------------------------------
+        # Remove the `permissions: id-token: write` block above and uncomment:
+        # with:
+        #   password: ${{ secrets.PYPI_API_TOKEN }}
+        # ---------------------------------------------------------------------
