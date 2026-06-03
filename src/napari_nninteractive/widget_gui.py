@@ -185,8 +185,8 @@ class BaseGUI(QWidget):
             _local_layout,
             "use torch.compile",
             False,
-            tooltips="If checked: enable torch.compile for local inference. The first prediction "
-            "will be slow while the model is compiled, but subsequent predictions will be faster.",
+            tooltips="If checked: enable torch.compile for local inference. The model is compiled "
+            "during Initialize, so initialization takes longer, but every prediction afterwards is faster.",
         )
 
         # --- Remote container --- #
@@ -278,6 +278,12 @@ class BaseGUI(QWidget):
             tooltips="Initialize the Model and Image Pair",
         )
 
+        # License of the loaded model, shown directly below Initialize once a
+        # session is ready (set in on_init for both local and remote modes).
+        self.model_license_label = QLabel("")
+        self.model_license_label.setWordWrap(True)
+        _layout.addWidget(self.model_license_label)
+
         self.reset_interaction_button = setup_iconbutton(
             _layout,
             "Reset Object",
@@ -307,6 +313,25 @@ class BaseGUI(QWidget):
 
         _group_box.setLayout(_layout)
         return _group_box
+
+    def _update_license_display(self, license_str: Optional[str]) -> None:
+        """Show the loaded model's license below the Initialize button.
+
+        Pass None to clear it (session reset / disconnect). The "!!MISSING!!"
+        sentinel is shown as a warning. license_str is the short identifier from
+        the checkpoint's LICENSE file (its first line).
+        """
+        label = self.model_license_label
+        if not license_str:
+            label.setText("")
+            label.setStyleSheet("")
+            return
+        if license_str.strip() == "!!MISSING!!":
+            label.setText("Model license: UNKNOWN (warning!)")
+            label.setStyleSheet("color: #d9534f; font-weight: bold;")  # warning red
+            return
+        label.setText(f"Model license: {license_str.strip()}")
+        label.setStyleSheet("")
 
     def _init_init_buttons(self):
         """Initializes the control buttons (Initialize and Reset)."""

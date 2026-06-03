@@ -125,6 +125,10 @@ class nnInteractiveWidget(LayerControls):
         if self.session is None:
             self._construct_local_session()
 
+        # Shared point for local + remote: surface the model license now (after
+        # Initialize) so both modes display it identically.
+        self._update_license_display(getattr(self.session, "license", None))
+
         # Enable only interaction tools supported by the loaded checkpoint.
         supported = self.session.supported_interactions
         self._set_interaction_button_support(
@@ -315,6 +319,7 @@ class nnInteractiveWidget(LayerControls):
         self._release_session()
         self.connect_btn.setText("Connect")
         self.remote_status_label.setText("not connected")
+        self._update_license_display(None)
 
     def _handle_session_expired(self) -> None:
         """Server-side lease is gone. Keep the label layer so the user can
@@ -353,6 +358,8 @@ class nnInteractiveWidget(LayerControls):
         """Reset the current session completely"""
         super().on_model_selected()
         self.session = None
+        # Genuine reset: the previous model's license no longer applies.
+        self._update_license_display(None)
         # A model/mode/server change is a genuine reset, not a reconnect:
         # don't resume the previous segmentation. (on_mode_switched and
         # on_remote_settings_changed both funnel through here.)
