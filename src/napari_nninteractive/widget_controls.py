@@ -59,6 +59,12 @@ class LayerControls(BaseGUI):
         self.colormap = ColorMapper(49, seed=0.5, background_value=0)
         self._scribble_brush_size = 5
         self.object_index = 0
+        # Names of the interaction layers that committed an interaction, newest last. Used by
+        # on_undo to remove the visual marker of the most recently undone interaction. The
+        # backend supports single-level undo, so only the top entry is ever undoable; older
+        # entries stay because their interactions are still applied. None means an interaction
+        # without a layer marker (e.g. Initialize with Mask).
+        self._interaction_history = []
 
         self._viewer.layers.selection.events.active.connect(self.on_layer_selected)
 
@@ -69,6 +75,8 @@ class LayerControls(BaseGUI):
         for layer_name in layer_names:
             if layer_name in self._viewer.layers:
                 self._viewer.layers.remove(layer_name)
+        # The interaction markers are gone, so nothing is left to undo for them.
+        self._interaction_history = []
 
     def add_point_layer(self) -> None:
         """Adds a single point layer to the viewer."""
@@ -366,6 +374,9 @@ class LayerControls(BaseGUI):
         # on_init to seed the new session.
         self._resume_image_layer = image_layer
         self._resuming = resume
+
+        # Fresh image/model pair: nothing from a previous object is undoable.
+        self._interaction_history = []
 
         # Lock the Session
         self._lock_session()

@@ -90,6 +90,7 @@ class BaseGUI(QWidget):
         self.run_ckbx.setEnabled(False)
         self.export_button.setEnabled(False)
         self.reset_interaction_button.setEnabled(False)
+        self.undo_button.setEnabled(False)
         self.propagate_ckbx.setEnabled(False)
         self.label_for_init.setEnabled(False)
         self.class_for_init.setEnabled(False)
@@ -127,6 +128,7 @@ class BaseGUI(QWidget):
         self.run_ckbx.setEnabled(True)
         self.export_button.setEnabled(True)
         self.reset_interaction_button.setEnabled(True)
+        self.undo_button.setEnabled(True)
         self.propagate_ckbx.setEnabled(True)
         self.label_for_init.setEnabled(True)
         self.class_for_init.setEnabled(True)
@@ -284,6 +286,15 @@ class BaseGUI(QWidget):
         self.model_license_label.setWordWrap(True)
         _layout.addWidget(self.model_license_label)
 
+        self.undo_button = setup_iconbutton(
+            _layout,
+            "Undo",
+            "step_left",
+            self._viewer.theme,
+            self.on_undo,
+            tooltips="Undo the last interaction for the current object - press Ctrl+Z",
+            shortcut="Ctrl+Z",
+        )
         self.reset_interaction_button = setup_iconbutton(
             _layout,
             "Reset Object",
@@ -498,6 +509,9 @@ class BaseGUI(QWidget):
     def on_reset_interactions(self):
         """Reset only the current interaction"""
         self._clear_layers()
+
+    def on_undo(self, *args, **kwargs) -> None:
+        """Placeholder method for undoing the last interaction."""
 
     def on_next(self) -> None:
         """Resets the interactions."""

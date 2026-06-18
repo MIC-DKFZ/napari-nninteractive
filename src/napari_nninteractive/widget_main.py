@@ -238,32 +238,40 @@ class nnInteractiveWidget(LayerControls):
                 server_url=server_url, api_key=api_key
             )
         except ServerAtCapacityError:
-            self.remote_status_label.setText("server is full, try again later")
+            self.remote_status_label.setText("Server full; try again later.")
             return None
-        except _SESSION_LOST_ERRORS:
-            # Extremely unlikely at /claim time, but handle for completeness.
-            self.remote_status_label.setText("server rejected the claim; try again")
-            return None
+        # Connectivity problems must be handled BEFORE the session-lost case below:
+        # httpx.ConnectError/ConnectTimeout are subclasses of httpx.TransportError, so a
+        # broad TransportError catch would otherwise swallow them and report the wrong cause.
         except httpx.ConnectError:
-            self.remote_status_label.setText(f"cannot reach {server_url}")
+            # DNS failure, connection refused, no route — nothing is listening/reachable.
+            self.remote_status_label.setText("Cannot reach server; check URL/port.")
             return None
         except httpx.ConnectTimeout:
-            self.remote_status_label.setText(f"timed out reaching {server_url}")
+            self.remote_status_label.setText("Connection timed out; check URL/network.")
+            return None
+        except httpx.TimeoutException:
+            # Connected, but the server did not answer the claim in time.
+            self.remote_status_label.setText("Server not responding; try again.")
+            return None
+        except SessionExpiredError:
+            # The connection worked but the server refused/expired the claim itself.
+            self.remote_status_label.setText("Claim rejected; try again.")
             return None
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
-                self.remote_status_label.setText("server rejected the API key")
+                self.remote_status_label.setText("Invalid API key.")
             elif "text/html" in e.response.headers.get("content-type", ""):
-                self.remote_status_label.setText(
-                    "server returned HTML (HTTP proxy?); set NO_PROXY"
-                )
+                self.remote_status_label.setText("Not an nnInteractive server (proxy?).")
             else:
-                self.remote_status_label.setText(
-                    f"server error {e.response.status_code}"
-                )
+                self.remote_status_label.setText(f"Server error {e.response.status_code}.")
+            return None
+        except httpx.TransportError:
+            # Any other network-level failure (proxy, protocol, broken connection).
+            self.remote_status_label.setText("Network error; check connection.")
             return None
         except Exception as e:  # noqa: BLE001
-            self.remote_status_label.setText(f"error: {e}")
+            self.remote_status_label.setText(f"Error: {e}")
             return None
 
         # Honor the current auto-zoom checkbox on the remote session too.
@@ -499,7 +507,45 @@ class nnInteractiveWidget(LayerControls):
                     self._handle_session_expired()
                     return
 
+                # Record which layer holds this interaction's marker so on_undo can remove it.
+                self._interaction_history.append(_layer_name)
                 self._viewer.layers[self.label_layer_name].refresh()
+
+    def on_undo(self):
+        """Undo the most recent interaction for the current object.
+
+        Reverts the segmentation via the backend's single-level undo and removes the visual
+        marker of the undone interaction. Only the most recent interaction can be undone; the
+        backend re-arms so the next new interaction becomes undoable again.
+        """
+        if self.session is None:
+            return
+        if not getattr(self.session, "supports_undo", False):
+            show_warning("Undo is not supported by this server. Please update nninteractive-server.")
+            return
+        try:
+            undone = self.session.undo()
+        except _SESSION_LOST_ERRORS:
+            self._handle_session_expired()
+            return
+
+        if not undone:
+            show_warning("Nothing to undo.")
+            return
+
+        # Remove the visual marker of the undone interaction, if we tracked one.
+        if self._interaction_history:
+            layer_name = self._interaction_history.pop()
+            if layer_name is not None and layer_name in self._viewer.layers:
+                layer = self._viewer.layers[layer_name]
+                try:
+                    layer.remove_last()
+                    layer.refresh()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[napari-nninteractive] could not remove last interaction marker: {e!r}")
+
+        if self.label_layer_name in self._viewer.layers:
+            self._viewer.layers[self.label_layer_name].refresh()
 
     def on_load_mask(self):
 
@@ -520,6 +566,8 @@ class nnInteractiveWidget(LayerControls):
                 except _SESSION_LOST_ERRORS:
                     self._handle_session_expired()
                     return
+                # Undoable via the backend; there is no interaction-layer marker to remove.
+                self._interaction_history.append(None)
                 self._viewer.layers[self.label_layer_name].refresh()
         else:
             warnings.warn("Mask is not valid - probably its empty", UserWarning, stacklevel=1)
