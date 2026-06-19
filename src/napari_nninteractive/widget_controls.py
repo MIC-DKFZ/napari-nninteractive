@@ -343,11 +343,13 @@ class LayerControls(BaseGUI):
             self.session_cfg["affine"].scale
         )
 
-        # Decide whether to resume the previous segmentation. We only resume
-        # after a connection loss (flag set by _handle_session_expired) and only
-        # when the surviving label layer belongs to the *same* image layer object
-        # (identity, not merely the same shape, which would be brittle). The
-        # shape check is a cheap guard against a layer that no longer matches.
+        # Decide whether to resume the previous segmentation. We only resume when
+        # the _resume_after_reconnect flag is armed -- set after a connection loss
+        # (_handle_session_expired) or after a baked-in local option changed
+        # (on_local_settings_changed) -- and only when the surviving label layer
+        # belongs to the *same* image layer object (identity, not merely the same
+        # shape, which would be brittle). The shape check is a cheap guard against
+        # a layer that no longer matches.
         resume = (
             getattr(self, "_resume_after_reconnect", False)
             and self.label_layer_name in self._viewer.layers
@@ -364,10 +366,15 @@ class LayerControls(BaseGUI):
         else:
             # Create the target label array and layer
             self._data_result = np.zeros(self.session_cfg["shape"], dtype=np.uint8)
-            self.object_index = 0
+            # Continue numbering/colors from any objects already segmented for this
+            # image in a previous session instead of restarting at 1.
+            self.object_index = self._next_object_index()
             if self.label_layer_name in self._viewer.layers:
                 self._viewer.layers.remove(self.label_layer_name)
             self.add_label_layer(self._data_result, self.label_layer_name)
+            # Colour the working layer to match where the counter resumes, so the
+            # in-progress object already shows its eventual colour.
+            self._viewer.layers[self.label_layer_name].colormap = self.colormap[self.object_index]
 
         # Pin the resume to this image object so a later reconnect can verify it
         # is the same image before resuming. _resuming is read by the subclass'
@@ -385,6 +392,27 @@ class LayerControls(BaseGUI):
         """Reset only the current interaction"""
         super().on_reset_interactions()
         self.on_layer_selected()
+
+    def _next_object_index(self) -> int:
+        """Continue object numbering from work already present in the viewer for
+        this image, so a new session does not restart at 1 and collide with the
+        names/colors of objects from a previous session. Considers both the
+        per-object ``object N - <name>`` layers and the values of the aggregated
+        ``semantic map - <name>`` layer. Returns 0 when nothing is present.
+        """
+        name = self.session_cfg["name"]
+        # determine_layer_index returns max(N) + 1 over the "object N - <name>"
+        # layers (or 0 when there are none); object_index is that max, one less.
+        highest = (
+            determine_layer_index(
+                [layer.name for layer in self._viewer.layers], "object ", f" - {name}"
+            )
+            - 1
+        )
+        sem_name = f"semantic map - {name}"
+        if sem_name in self._viewer.layers:
+            highest = max(highest, int(self._viewer.layers[sem_name].data.max()))
+        return max(highest, 0)
 
     def on_next(self) -> None:
         """

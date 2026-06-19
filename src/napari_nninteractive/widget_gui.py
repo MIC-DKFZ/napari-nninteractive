@@ -171,25 +171,50 @@ class BaseGUI(QWidget):
         _boxlayout = QHBoxLayout()
         _local_layout.addLayout(_boxlayout)
         self.model_selection_local = setup_lineedit(
-            _boxlayout, placeholder="Use Local Checkpoint...", function=self.on_model_selected
+            _boxlayout, placeholder="Use Local Checkpoint...", function=self.on_checkpoint_changed
         )
 
         def _reset_local_ckpt_lineedit():
             self.model_selection_local.setText("")
-            self.on_model_selected()
+            self.on_checkpoint_changed()
 
         btn = setup_iconbutton(
             _boxlayout, "", "delete_shape", self._viewer.theme, function=_reset_local_ckpt_lineedit
         )
         btn.setFixedWidth(30)
 
+        # --- Advanced (local) options --- #
+        # These are niche settings, so they live in a collapsible section that is folded
+        # by default. The fold state and the chosen values are persisted via QSettings.
+        advanced_collapsed = self._settings.value("advanced_collapsed", True, type=bool)
+        self.advanced_box, _advanced_layout = setup_vcollapsiblegroupbox(
+            _local_layout, text="Advanced", collapsed=advanced_collapsed
+        )
+
         self.use_torch_compile_ckbx = setup_checkbox(
-            _local_layout,
+            _advanced_layout,
             "use torch.compile",
-            False,
+            self._settings.value("use_torch_compile", False, type=bool),
             tooltips="If checked: enable torch.compile for local inference. The model is compiled "
             "during Initialize, so initialization takes longer, but every prediction afterwards is faster.",
         )
+
+        _storage_layout = QHBoxLayout()
+        _advanced_layout.addLayout(_storage_layout)
+        setup_label(_storage_layout, "interaction storage")
+        self.interactions_storage_combo = setup_combobox(
+            _storage_layout,
+            options=["auto", "blosc2", "tensor"],
+            tooltips="Storage backend for the interaction tensor (local inference only):\n"
+            "• auto: dense tensor for smaller images, blosc2 above ~512x512x512 (default)\n"
+            "• blosc2: much less RAM, slightly slower\n"
+            "• tensor: much more RAM, slightly faster\n"
+            "Pick blosc2 manually if you are short on RAM.",
+        )
+        saved_storage = self._settings.value("interactions_storage", "auto", type=str)
+        _storage_idx = self.interactions_storage_combo.findText(saved_storage)
+        if _storage_idx >= 0:
+            self.interactions_storage_combo.setCurrentIndex(_storage_idx)
 
         # --- Remote container --- #
         self.remote_container = QWidget()
@@ -251,6 +276,26 @@ class BaseGUI(QWidget):
         )
         self.server_url_edit.textChanged.connect(
             lambda t: self._settings.setValue("server_url", t)
+        )
+
+        # Persist the advanced options (fold state + chosen values) between sessions.
+        self.advanced_box.toggled.connect(
+            lambda expanded: self._settings.setValue("advanced_collapsed", not expanded)
+        )
+        self.use_torch_compile_ckbx.toggled.connect(
+            lambda checked: self._settings.setValue("use_torch_compile", checked)
+        )
+        self.interactions_storage_combo.currentTextChanged.connect(
+            lambda t: self._settings.setValue("interactions_storage", t)
+        )
+
+        # torch.compile and interaction storage are baked into the session at Initialize.
+        # Changing one afterwards would leave the GUI out of sync with the live session, so
+        # uninitialize and force a re-Initialize -- but keep the in-progress segmentation.
+        # Wired after the construction-time restore above, so it never fires during build.
+        self.use_torch_compile_ckbx.toggled.connect(lambda *_: self.on_local_settings_changed())
+        self.interactions_storage_combo.currentTextChanged.connect(
+            lambda *_: self.on_local_settings_changed()
         )
 
         _group_box.setLayout(_layout)
@@ -505,6 +550,12 @@ class BaseGUI(QWidget):
 
     def on_remote_settings_changed(self, *args, **kwargs) -> None:
         """Placeholder for handling changes to remote URL/API key fields."""
+
+    def on_local_settings_changed(self, *args, **kwargs) -> None:
+        """Placeholder for changes to baked-in local options (torch.compile / storage)."""
+
+    def on_checkpoint_changed(self, *args, **kwargs) -> None:
+        """Placeholder for edits to / clearing of the local checkpoint path."""
 
     def on_reset_interactions(self):
         """Reset only the current interaction"""

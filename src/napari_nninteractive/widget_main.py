@@ -64,6 +64,9 @@ class nnInteractiveWidget(LayerControls):
         self._resume_after_reconnect = False
         self._resume_image_layer = None
         self._resuming = False
+        # Checkpoint-path text the current session was built from. Lets a
+        # re-submitted, unchanged path be a no-op instead of an uninitialize.
+        self._active_checkpoint_text = None
         self._viewer.dims.events.order.connect(self.on_axis_change)
 
         # Belt-and-suspenders lease release on shutdown. closeEvent on this
@@ -163,6 +166,9 @@ class nnInteractiveWidget(LayerControls):
         # Init succeeded; clear the resume state so a normal re-init starts fresh.
         self._resume_after_reconnect = False
         self._resuming = False
+        # Remember the checkpoint text this session was built from, so re-pressing
+        # Enter on an unchanged path keeps the session instead of resetting it.
+        self._active_checkpoint_text = self.model_selection_local.text()
 
         if self._viewer.dims.not_displayed != ():
             self._scribble_brush_size = self.session.preferred_scribble_thickness[
@@ -210,6 +216,7 @@ class nnInteractiveWidget(LayerControls):
             torch_n_threads=os.cpu_count(),
             verbose=False,
             do_autozoom=self.propagate_ckbx.isChecked(),
+            interactions_storage=self.interactions_storage_combo.currentText(),
         )
 
         self.session.initialize_from_trained_model_folder(
@@ -373,6 +380,52 @@ class nnInteractiveWidget(LayerControls):
         # on_remote_settings_changed both funnel through here.)
         self._resume_after_reconnect = False
         self._resume_image_layer = None
+
+    def _uninitialize_keep_segmentation(self) -> bool:
+        """Drop the live session but keep the segmentation, arming the same resume
+        path used after a reconnect so the next Initialize seeds the new session
+        with the work in progress instead of discarding it. Returns True if a
+        session was actually torn down, False when nothing was initialized.
+        """
+        if self.session is None:
+            # Nothing initialized yet, so there is nothing to preserve or tear
+            # down; the new value is simply picked up at the next Initialize.
+            return False
+        # Keep _resume_image_layer (set during the last on_init) so the next
+        # Initialize on the same image resumes instead of starting fresh.
+        self._resume_after_reconnect = True
+        self.session = None
+        self._clear_layers()
+        self._unlock_session()
+        return True
+
+    def on_local_settings_changed(self, *args, **kwargs):
+        """A baked-in local option (torch.compile / interaction storage) changed.
+
+        The live session was built with the old value, so drop it and force a
+        re-Initialize. Unlike a model change this is not a genuine reset: keep the
+        segmentation so the next Initialize continues the work in progress. The
+        model is unchanged, so the displayed license still applies.
+        """
+        self._uninitialize_keep_segmentation()
+
+    def on_checkpoint_changed(self, *args, **kwargs):
+        """The local checkpoint path was edited or cleared (the 'x' button).
+
+        Like a settings change, keep the segmentation and arm resume so the next
+        Initialize continues on the same image. The checkpoint may point at a
+        different model though, so drop the displayed license; on_init repopulates
+        it once the new session is up.
+        """
+        # Re-submitting the same path the live session was built from changes
+        # nothing, so leave the session initialized.
+        if (
+            self.session is not None
+            and self.model_selection_local.text() == self._active_checkpoint_text
+        ):
+            return
+        if self._uninitialize_keep_segmentation():
+            self._update_license_display(None)
 
     def on_image_selected(self):
         """Reset the current sessions interaction but keep the session itself"""
