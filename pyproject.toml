@@ -1,6 +1,6 @@
 [project]
 name = "napari-nninteractive"
-dynamic = ["version"]
+version = "2.3.0"
 description = "nnInteractive plugin for Napari"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -32,7 +32,7 @@ dependencies = [
     "napari-nifti",
     "huggingface_hub",
     "hf_transfer",
-    "nnInteractive>=2.3.0",
+    "nnInteractive>=2.4.0",
     "napari_toolkit",
 ]
 
@@ -46,7 +46,7 @@ testing = [
     "pyqt5",
 ]
 remote = [
-    "nnInteractive[client]>=2.2.0",
+    "nnInteractive[client]>=2.4.0",
 ]
 
 [project.entry-points."napari.manifest"]
@@ -68,9 +68,6 @@ where = ["src"]
 [project.urls]
 Homepage = "https://github.com/MIC-DKFZ/napari-nninteractive"
 Code = "https://github.com/MIC-DKFZ/napari-nninteractive"
-
-[tool.setuptools.dynamic]
-version = {attr = "napari_nninteractive.__init__.__version__"}
 
 [tool.black]
 line-length = 100
