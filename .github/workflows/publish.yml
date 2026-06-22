@@ -3,11 +3,10 @@ name: Publish to PyPI
 # Build an sdist + wheel and upload them to PyPI whenever a version tag is
 # pushed (e.g. `git tag v2.2.0 && git push origin v2.2.0`).
 #
-# The published version comes from `__version__` in
-# src/napari_nninteractive/__init__.py (pyproject.toml reads it via
-# tool.setuptools.dynamic), NOT from the tag. The "Verify tag matches package
-# version" step below fails the run if the tag and __version__ disagree, so you
-# can't accidentally publish a mismatched version.
+# The published version comes from `project.version` in pyproject.toml, NOT from
+# the tag. The "Verify tag matches package version" step below fails the run if
+# the tag and the pyproject version disagree, so you can't accidentally publish a
+# mismatched version.
 #
 # Authentication uses PyPI Trusted Publishing (OIDC) — no API token / secret is
 # stored in the repo. See the repo README / release docs for the one-time PyPI
@@ -39,11 +38,11 @@ jobs:
 
       - name: Verify tag matches package version
         run: |
-          PKG_VERSION="$(python -c "import re; print(re.search(r'__version__\s*=\s*[\"\x27]([^\"\x27]+)', open('src/napari_nninteractive/__init__.py').read()).group(1))")"
+          PKG_VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          echo "Tag: $TAG_VERSION   __version__: $PKG_VERSION"
+          echo "Tag: $TAG_VERSION   pyproject version: $PKG_VERSION"
           if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Tag '$GITHUB_REF_NAME' does not match __version__ '$PKG_VERSION'. Bump the version before tagging."
+            echo "::error::Tag '$GITHUB_REF_NAME' does not match pyproject version '$PKG_VERSION'. Bump the version before tagging."
             exit 1
           fi
 
