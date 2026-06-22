@@ -30,6 +30,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_nninteractive._version_check import VersionChecker, _is_outdated
+
 
 class BaseGUI(QWidget):
     """
@@ -66,14 +68,60 @@ class BaseGUI(QWidget):
 
         _ = setup_acknowledgements(_scroll_layout, width=self._width)  # Acknowledgements
 
+        # Update notice, below the logo (filled in asynchronously once PyPI has been queried).
+        self.version_status_label = QLabel("")
+        self.version_status_label.setWordWrap(True)
+        self.version_status_label.setAlignment(Qt.AlignLeft)
+        # Let the user select/copy the update command with the mouse or keyboard.
+        self.version_status_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
+        self.version_status_label.setVisible(False)
+        _scroll_layout.addWidget(self.version_status_label)
+
         self._unlock_session()
         self._viewer.bind_key("Ctrl+Q", self._close, overwrite=True)
+
+        # Non-blocking check for newer releases on PyPI. Kept as an attribute so
+        # it outlives __init__; the daemon thread it spawns never blocks startup.
+        self._version_checker = VersionChecker()
+        self._version_checker.finished.connect(self._on_version_check_finished)
+        self._version_checker.start()
 
     # Base Behaviour
     def _close(self):
         """Closes the viewer and quits the application."""
         self._viewer.close()
         quit()
+
+    def _on_version_check_finished(self, results: dict) -> None:
+        """Show an up-to-date / update-available notice from the PyPI check.
+
+        `results` maps each package name to an `(installed, latest)` tuple; either
+        entry may be None (package not installed or PyPI unreachable). When nothing
+        could be compared the label stays hidden rather than showing a false notice.
+        """
+        outdated = [
+            pkg
+            for pkg, (installed, latest) in results.items()
+            if installed and latest and _is_outdated(installed, latest)
+        ]
+        checkable = any(installed and latest for installed, latest in results.values())
+
+        if not checkable:
+            self.version_status_label.setVisible(False)
+            return
+
+        self.version_status_label.setVisible(True)
+        if outdated:
+            self.version_status_label.setText(
+                "Update available. Please run:\n"
+                "pip install -U nnInteractive napari-nninteractive"
+            )
+            self.version_status_label.setStyleSheet("color: #e8830c; font-weight: bold;")  # orange
+        else:
+            self.version_status_label.setText("nnInteractive is up to date")
+            self.version_status_label.setStyleSheet("color: #2e9e2e;")  # green
 
     def _unlock_session(self):
         """Unlocks the session, enabling model and image selection, and initializing controls."""
