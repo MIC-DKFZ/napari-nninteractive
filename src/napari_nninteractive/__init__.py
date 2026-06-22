@@ -1,10 +1,7 @@
-from importlib.metadata import PackageNotFoundError, version
-
 from .widget_main import nnInteractiveWidget
+from importlib.metadata import version as _version
 
-try:
-    __version__ = version("napari-nninteractive")
-except PackageNotFoundError:
-    __version__ = "unknown"
+__version__ = _version("nnInteractive")
+
 
 __all__ = ("nnInteractiveWidget",)
