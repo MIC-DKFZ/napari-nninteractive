@@ -345,8 +345,7 @@ class LayerControls(BaseGUI):
 
         # Decide whether to resume the previous segmentation. We only resume when
         # the _resume_after_reconnect flag is armed -- set after a connection loss
-        # (_handle_session_expired) or after a baked-in local option changed
-        # (on_local_settings_changed) -- and only when the surviving label layer
+        # (_handle_session_expired) -- and only when the surviving label layer
         # belongs to the *same* image layer object (identity, not merely the same
         # shape, which would be brittle). The shape check is a cheap guard against
         # a layer that no longer matches.
@@ -414,15 +413,15 @@ class LayerControls(BaseGUI):
             highest = max(highest, int(self._viewer.layers[sem_name].data.max()))
         return max(highest, 0)
 
-    def on_next(self) -> None:
-        """
-        Prepares the next label layer for interactions in the viewer.
+    def _store_current_object(self) -> None:
+        """Promote the in-progress label layer to a finished object.
 
-        Retrieves the index of the last labeled object, renames the current label layer with
-        this index, unbinds the original data by creating a deep copy, and clears all interaction
-        layers. A new label layer with an updated colormap is then added to the viewer.
+        Either as its own ``object N - <name>`` layer or, in instance-aggregation
+        mode, merged into the shared ``semantic map - <name>`` layer. Advances
+        object_index so subsequent objects keep consistent numbering and colours.
+        Shared by ``on_next`` and by the reset paths that offer to keep the
+        in-progress segmentation before tearing down the session.
         """
-        # Rename the current layer and add a new one
         label_layer = self._viewer.layers[self.label_layer_name]
         if not self.instance_aggregation_ckbx.isChecked():
 
@@ -441,7 +440,18 @@ class LayerControls(BaseGUI):
             sem_layer.refresh()
 
         self.object_index += 1
-        label_layer.colormap = self.colormap[self.object_index]
+
+    def on_next(self) -> None:
+        """
+        Prepares the next label layer for interactions in the viewer.
+
+        Retrieves the index of the last labeled object, renames the current label layer with
+        this index, unbinds the original data by creating a deep copy, and clears all interaction
+        layers. A new label layer with an updated colormap is then added to the viewer.
+        """
+        # Store the current object and recolour the working layer for the next one.
+        self._store_current_object()
+        self._viewer.layers[self.label_layer_name].colormap = self.colormap[self.object_index]
 
         self._clear_layers()
         self.prompt_button._uncheck()
