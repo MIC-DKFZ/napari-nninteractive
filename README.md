@@ -81,6 +81,19 @@ Install the plugin via pip:
 pip install napari-nninteractive
 ```
 
+The default install runs **local in-process inference** and pulls PyTorch + nnU-Net.
+
+> [!TIP]
+> **Remote-only, torch-free install.** If this machine only drives a remote
+> `nninteractive-server` and you want to avoid installing PyTorch, install the plugin
+> without nnInteractive's heavy dependencies and add just the wire stack:
+> ```bash
+> pip install --no-deps napari-nninteractive nnInteractive
+> pip install numpy qtpy napari-nifti huggingface_hub hf_transfer napari_toolkit httpx blosc2
+> ```
+> (Pip extras can only *add*, so they cannot subtract PyTorch from the default install —
+> hence the `--no-deps` route for a torch-free client.)
+
 Or clone and install this repository:
 
 ```bash
@@ -175,7 +188,7 @@ Link: [![arXiv](https://img.shields.io/badge/arXiv-2503.08373-b31b1b.svg)](https
 
 # License
 
-Note that while this repository is available under Apache-2.0 license (see [LICENSE](./LICENSE)), the [model checkpoint](https://huggingface.co/nnInteractive/nnInteractive) is `Creative Commons Attribution Non Commercial Share Alike 4.0`!
+Note that while this repository is available under Apache-2.0 license (see [LICENSE](./LICENSE)), the [model checkpoint](https://huggingface.co/MIC-DKFZ/nnInteractive) is `Creative Commons Attribution Non Commercial Share Alike 4.0`!
 
 ______________________________________________________________________
 

@@ -1,3 +1,4 @@
+import warnings
 from typing import Optional
 
 from napari.layers import Image, Labels
@@ -210,11 +211,36 @@ class BaseGUI(QWidget):
         self.local_container.setLayout(_local_layout)
         _layout.addWidget(self.local_container)
 
-        model_options = ["nnInteractive_v1.0"]
+        # Populate the model dropdown from the nnInteractive backend manifest — the
+        # authoritative list of selectable official models, fetched from Hugging Face
+        # (remote-first) with an offline cache fallback. The dropdown shows display
+        # names; self._model_ids keeps the matching manifest ids by position. If the
+        # list can't be loaded at all, the dropdown is left empty and the user can
+        # still point to a local checkpoint below or switch to Remote mode.
+        self._model_ids: list[str] = []
+        model_display_names: list[str] = []
+        default_index = 0
+        try:
+            from nnInteractive.model_management import get_default_model_id, list_models
+
+            models = list_models()
+            self._model_ids = [m["id"] for m in models]
+            model_display_names = [m.get("display_name", m["id"]) for m in models]
+            default_id = get_default_model_id()
+            if default_id in self._model_ids:
+                default_index = self._model_ids.index(default_id)
+        except Exception as exc:  # noqa: BLE001 - never block the GUI on model discovery
+            warnings.warn(f"Could not load the nnInteractive model list: {exc}")
 
         self.model_selection = setup_combobox(
-            _local_layout, options=model_options, function=self.on_model_selected
+            _local_layout, options=model_display_names, function=self.on_model_selected
         )
+        if model_display_names:
+            # Select the manifest default without firing on_model_selected during init
+            # (the handler touches subclass state that isn't built yet).
+            self.model_selection.blockSignals(True)
+            self.model_selection.setCurrentIndex(default_index)
+            self.model_selection.blockSignals(False)
 
         _boxlayout = QHBoxLayout()
         _local_layout.addLayout(_boxlayout)

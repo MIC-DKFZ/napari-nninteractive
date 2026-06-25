@@ -26,13 +26,16 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
+    # Default install runs local in-process inference: it pulls the full nnInteractive
+    # stack (torch + nnU-Net). For a lightweight, torch-free remote-only client see the
+    # README (install with --no-deps); pip extras cannot subtract torch from this base.
     "torch",
     "numpy",
     "qtpy",
     "napari-nifti",
-    "huggingface_hub",
-    "hf_transfer",
-    "nnInteractive>=2.4.0",
+    # Model discovery/download now lives in the nnInteractive backend
+    # (nnInteractive.model_management), so huggingface_hub is pulled in transitively.
+    "nnInteractive>=2.5.0",
     "napari_toolkit",
 ]
 
@@ -45,8 +48,10 @@ testing = [
     "napari",
     "pyqt5",
 ]
+# The default install is already remote-capable; this extra is kept for clarity and
+# pins the nnInteractive version. For a torch-free remote-only client, see the README.
 remote = [
-    "nnInteractive[client]>=2.4.0",
+    "nnInteractive[client]>=2.5.0",
 ]
 
 [project.entry-points."napari.manifest"]

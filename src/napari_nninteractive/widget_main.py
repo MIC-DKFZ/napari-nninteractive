@@ -4,15 +4,17 @@ import warnings
 from pathlib import Path
 from typing import Any, Optional
 
-import nnInteractive
+import nnInteractive  # lightweight: only reads the package version at import time
 import numpy as np
-import torch
-from batchgenerators.utilities.file_and_folder_operations import join, load_json
 from napari.utils.notifications import show_warning
 from napari.viewer import Viewer
-from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
 from qtpy.QtCore import QEvent
 from qtpy.QtWidgets import QApplication, QWidget
+
+# NOTE: torch, nnunetv2 and batchgenerators are only needed for *local* inference
+# (the nnInteractive[local] extra). They are imported lazily inside
+# _construct_local_session() so a remote-only install (nnInteractive[client]) stays
+# PyTorch-free.
 
 from napari_nninteractive.widget_controls import LayerControls
 
@@ -184,6 +186,12 @@ class nnInteractiveWidget(LayerControls):
 
     def _construct_local_session(self) -> None:
         """Construct the local inference session from self.checkpoint_path."""
+        # Heavy, local-only dependencies (the nnInteractive[local] extra). Imported
+        # here so remote-only installs never need torch / nnU-Net.
+        import torch
+        from batchgenerators.utilities.file_and_folder_operations import join, load_json
+        from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
+
         # Get inference class from Checkpoint
         if Path(self.checkpoint_path).joinpath("inference_session_class.json").is_file():
             inference_class = load_json(
