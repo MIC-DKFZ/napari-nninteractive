@@ -48,7 +48,18 @@ class ScribbleLayer(BaseLayerClass, Labels):
         """
         Finalizes the current scribble interaction, updating the label index and marking the layer as free.
         """
-        self.data[self.data == 1] = self.prompt_index + 2
+        # Recolor the just-drawn stroke (value 1 -> committed prompt value) on the
+        # painted slice only. The stroke never spans more than the last painted slice
+        # (on_draw undoes any pending stroke before a new one, and _commit_staged_history
+        # records that slice), so this avoids scanning/writing the whole D×H×W volume.
+        if self._last_slice_id is not None:
+            idx = [slice(None)] * 3
+            idx[self._last_dim_not_displayed] = self._last_slice_id
+            slice_view = self.data[tuple(idx)]  # integer index on one axis -> a view
+            slice_view[slice_view == 1] = self.prompt_index + 2  # in-place, writes back to self.data
+        else:
+            # Defensive fallback: run is normally called only after a commit recorded a slice.
+            self.data[self.data == 1] = self.prompt_index + 2
         self._is_free = True
         self.refresh()
 
