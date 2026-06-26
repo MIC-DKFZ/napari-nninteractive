@@ -47,6 +47,32 @@ class nnInteractiveWidget(LayerControls):
     """
     A widget for the nnInteractive plugin in Napari that manages model inference sessions
     and allows interactive layer-based actions.
+
+    Handling the in-progress object when a session ends
+    ---------------------------------------------------
+    Whenever a live session is torn down we have to decide what happens to the
+    object the user is currently working on (the un-committed "nnInteractive -
+    Label Layer"). The behaviour deliberately splits along *why* the session
+    ended:
+
+    * **User-triggered reinitialization** -- changing the model, the Local/Remote
+      mode, the server URL/key (``on_model_selected``), the local checkpoint
+      (``on_checkpoint_changed``) or a baked-in option such as torch.compile or
+      the interaction storage backend (``on_local_settings_changed``). The new
+      session cannot meaningfully continue the old object, so we *wrap it up*:
+      ``_store_in_progress_segmentation`` commits it as a finished object (exactly
+      like "Next Object") and the user starts fresh on the next Initialize. If
+      they don't want the stored object they can simply delete the layer.
+
+    * **Unintentional loss** -- the remote lease expired or the connection dropped
+      (``_handle_session_expired``). The user did not ask to stop, so we instead
+      *resume*: the label layer is kept and the resume machinery
+      (``_resume_after_reconnect`` / ``_resume_image_layer`` / ``_resuming``,
+      consumed in ``LayerControls.on_init``) seeds the reconnected session with it
+      so refinement continues on the same object.
+
+    In short: deliberate resets bank the work and start over; accidental drops
+    preserve and resume it.
     """
 
     def __init__(self, viewer: Viewer, parent: Optional[QWidget] = None):
@@ -377,8 +403,35 @@ class nnInteractiveWidget(LayerControls):
         self.remote_container.setVisible(self._remote_mode)
         self.on_model_selected()
 
+    def _store_in_progress_segmentation(self) -> None:
+        """Before a genuine reset (model / mode / server change) drops the session,
+        store the object currently being worked on.
+
+        A genuine reset starts a fresh session, so the in-progress segmentation
+        cannot be resumed (unlike a reconnect or a baked-in option change). Rather
+        than silently discarding it, store it as a finished object - exactly like
+        'Next Object' does. The user can delete the stored object manually if they
+        do not want it. The working layer is then removed: its data has already
+        been copied into the stored object, and removing it prevents the same
+        object being stored twice if the user resets again before re-initializing.
+
+        Does nothing when there is no non-empty in-progress segmentation.
+        """
+        if (
+            self.session_cfg is None
+            or self.label_layer_name not in self._viewer.layers
+            or not np.any(self._viewer.layers[self.label_layer_name].data)
+        ):
+            return
+
+        self._store_current_object()
+        self._viewer.layers.remove(self.label_layer_name)
+
     def on_model_selected(self):
         """Reset the current session completely"""
+        # A genuine reset cannot resume the in-progress object, so store it as a
+        # finished object before the session is gone instead of losing it.
+        self._store_in_progress_segmentation()
         super().on_model_selected()
         self.session = None
         # Genuine reset: the previous model's license no longer applies.
@@ -389,19 +442,17 @@ class nnInteractiveWidget(LayerControls):
         self._resume_after_reconnect = False
         self._resume_image_layer = None
 
-    def _uninitialize_keep_segmentation(self) -> bool:
-        """Drop the live session but keep the segmentation, arming the same resume
-        path used after a reconnect so the next Initialize seeds the new session
-        with the work in progress instead of discarding it. Returns True if a
-        session was actually torn down, False when nothing was initialized.
+    def _uninitialize_storing_segmentation(self) -> bool:
+        """Drop the live session, first storing the in-progress object as a
+        finished object (like a model/mode change) instead of resuming it on the
+        next Initialize. Returns True if a session was actually torn down, False
+        when nothing was initialized.
         """
         if self.session is None:
-            # Nothing initialized yet, so there is nothing to preserve or tear
-            # down; the new value is simply picked up at the next Initialize.
+            # Nothing initialized yet, so there is nothing to store or tear down;
+            # the new value is simply picked up at the next Initialize.
             return False
-        # Keep _resume_image_layer (set during the last on_init) so the next
-        # Initialize on the same image resumes instead of starting fresh.
-        self._resume_after_reconnect = True
+        self._store_in_progress_segmentation()
         self.session = None
         self._clear_layers()
         self._unlock_session()
@@ -411,17 +462,17 @@ class nnInteractiveWidget(LayerControls):
         """A baked-in local option (torch.compile / interaction storage) changed.
 
         The live session was built with the old value, so drop it and force a
-        re-Initialize. Unlike a model change this is not a genuine reset: keep the
-        segmentation so the next Initialize continues the work in progress. The
-        model is unchanged, so the displayed license still applies.
+        re-Initialize. The new session cannot resume the in-progress object, so
+        store it as a finished object first instead of discarding it. The model is
+        unchanged, so the displayed license still applies.
         """
-        self._uninitialize_keep_segmentation()
+        self._uninitialize_storing_segmentation()
 
     def on_checkpoint_changed(self, *args, **kwargs):
         """The local checkpoint path was edited or cleared (the 'x' button).
 
-        Like a settings change, keep the segmentation and arm resume so the next
-        Initialize continues on the same image. The checkpoint may point at a
+        Like a settings change, drop the session and store the in-progress object
+        as a finished object before it is lost. The checkpoint may point at a
         different model though, so drop the displayed license; on_init repopulates
         it once the new session is up.
         """
@@ -432,7 +483,7 @@ class nnInteractiveWidget(LayerControls):
             and self.model_selection_local.text() == self._active_checkpoint_text
         ):
             return
-        if self._uninitialize_keep_segmentation():
+        if self._uninitialize_storing_segmentation():
             self._update_license_display(None)
 
     def on_image_selected(self):
