@@ -1,3 +1,4 @@
+import importlib.util
 import warnings
 from typing import Optional
 
@@ -33,6 +34,39 @@ from qtpy.QtWidgets import (
 
 from napari_nninteractive._version_check import VersionChecker, _is_outdated
 
+# Shared wording for the disabled-Local tooltip and the start-up notice. The
+# lightweight ``nninteractive-client`` distribution is remote-only and torch-free;
+# local inference lives in the full ``nnInteractive`` package.
+_REMOTE_ONLY_HINT = (
+    "Local inference is unavailable: this is a remote-only install "
+    "(the lightweight 'nninteractive-client', without the full 'nnInteractive' "
+    "package).\n"
+    "You can only connect to a remote nninteractive-server.\n"
+    "To enable local inference, install the full package:\n"
+    "    pip install nnInteractive"
+)
+
+
+def _local_inference_available() -> bool:
+    """Return True if local inference is installed.
+
+    The lightweight ``nninteractive-client`` ships only the remote client; the
+    local engine and its torch / nnU-Net stack live in the full ``nnInteractive``
+    package. We probe for the local inference module *without* importing torch:
+    ``find_spec`` only locates the module. In a client-only environment the full
+    package's last-resort meta-path finder raises ``ModuleNotFoundError`` here
+    (see ``nnInteractive.inference.remote._full_required``), which we treat as
+    "not available".
+    """
+    try:
+        return (
+            importlib.util.find_spec("nnInteractive.inference.inference_session") is not None
+        )
+    except ModuleNotFoundError:
+        return False
+    except Exception:  # noqa: BLE001 - never block the GUI on a capability probe
+        return False
+
 
 class BaseGUI(QWidget):
     """
@@ -50,8 +84,17 @@ class BaseGUI(QWidget):
         self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self._viewer = viewer
         self.session_cfg = None
-        self._remote_mode = False
+        # Whether local inference is installed. A remote-only
+        # 'nninteractive-client' install cannot run it, so we start in Remote
+        # mode and disable the Local controls (see _init_model_selection).
+        self._local_available = _local_inference_available()
+        self._remote_mode = not self._local_available
         self._settings = QSettings("MIC-DKFZ", "napari-nninteractive")
+
+        # Be transparent on start-up: tell remote-only users why local inference
+        # is off and how to enable it, so a missing Local button is never a mystery.
+        if not self._local_available:
+            print(f"[napari-nninteractive] {_REMOTE_ONLY_HINT}")
 
         _main_layout = QVBoxLayout()
         self.setLayout(_main_layout)
@@ -199,15 +242,31 @@ class BaseGUI(QWidget):
         """Initializes the model selection as a combo box."""
         _group_box, _layout = setup_vgroupbox(text="Model Selection:")
 
-        # Local | Remote mode switch
+        # Local | Remote mode switch. Start on Remote when local inference is not
+        # installed, since Local cannot be used in that case.
         self.mode_switch = setup_hswitch(
             _layout,
             options=["Local", "Remote"],
             function=self.on_mode_switched,
-            default=0,
+            default=0 if self._local_available else 1,
             fixed_color="rgb(0,100, 167)",
             tooltips="Run inference locally or on a remote nninteractive-server",
         )
+
+        # Remote-only install: grey out the Local button (keeping it visible so the
+        # option is discoverable) and explain why + how to enable local inference.
+        if not self._local_available:
+            self.mode_switch.buttons[0].setEnabled(False)
+            self.mode_switch.buttons[0].setToolTip(_REMOTE_ONLY_HINT)
+            # A *disabled* widget receives no hover events in Qt, so the button's own
+            # tooltip may never display — the hover lands on the enabled parent
+            # instead. Put the hint on the switch too so it shows when the user
+            # hovers the greyed Local button, and give the still-usable Remote button
+            # its own tooltip so it doesn't inherit the "unavailable" message.
+            self.mode_switch.setToolTip(_REMOTE_ONLY_HINT)
+            self.mode_switch.buttons[1].setToolTip(
+                "Run inference on a remote nninteractive-server"
+            )
 
         # --- Local container --- #
         self.local_container = QWidget()
@@ -225,17 +284,24 @@ class BaseGUI(QWidget):
         self._model_ids: list[str] = []
         model_display_names: list[str] = []
         default_index = 0
-        try:
-            from nnInteractive.model_management import get_default_model_id, list_models
+        # The model dropdown only drives local inference (in Remote mode the server
+        # picks the model), and model discovery lives in the full package. A
+        # remote-only install therefore skips loading the list entirely rather than
+        # triggering the full-package-required error.
+        if self._local_available:
+            try:
+                from nnInteractive.model_management import get_default_model_id, list_models
 
-            models = list_models()
-            self._model_ids = [m["id"] for m in models]
-            model_display_names = [m.get("display_name", m["id"]) for m in models]
-            default_id = get_default_model_id()
-            if default_id in self._model_ids:
-                default_index = self._model_ids.index(default_id)
-        except Exception as exc:  # noqa: BLE001 - never block the GUI on model discovery
-            warnings.warn(f"Could not load the nnInteractive model list: {exc}")
+                models = list_models()
+                self._model_ids = [m["id"] for m in models]
+                model_display_names = [m.get("display_name", m["id"]) for m in models]
+                default_id = get_default_model_id()
+                if default_id in self._model_ids:
+                    default_index = self._model_ids.index(default_id)
+            except Exception as exc:  # noqa: BLE001 - never block the GUI on model discovery
+                warnings.warn(
+                    f"Could not load the nnInteractive model list: {exc}", stacklevel=2
+                )
 
         self.model_selection = setup_combobox(
             _local_layout, options=model_display_names, function=self.on_model_selected
@@ -331,8 +397,13 @@ class BaseGUI(QWidget):
         self.remote_status_label.setWordWrap(True)
         _remote_layout.addWidget(self.remote_status_label)
 
-        # Default: Local visible, Remote hidden
-        self.remote_container.setVisible(False)
+        # Show the container for the active mode. A remote-only install starts in
+        # Remote mode; its Local controls are hidden and disabled (the menus that
+        # belong to the now-greyed Local button).
+        self.local_container.setVisible(not self._remote_mode)
+        self.remote_container.setVisible(self._remote_mode)
+        if not self._local_available:
+            self.local_container.setEnabled(False)
 
         # Restore last-used values (blocking signals so we don't trigger
         # on_model_selected / on_remote_settings_changed before the rest of

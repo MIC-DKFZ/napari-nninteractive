@@ -1,6 +1,6 @@
 [project]
 name = "napari-nninteractive"
-version = "2.3.2"
+version = "2.4.0"
 description = "nnInteractive plugin for Napari"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -26,7 +26,7 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # Default install runs local in-process inference: it pulls the full nnInteractive
+    # Default install runs local inference: it pulls the full nnInteractive
     # stack (torch + nnU-Net). For a lightweight, torch-free remote-only client see the
     # README (install with --no-deps); pip extras cannot subtract torch from this base.
     "torch",
