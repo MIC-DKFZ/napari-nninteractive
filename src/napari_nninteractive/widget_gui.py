@@ -115,9 +115,14 @@ class BaseGUI(QWidget):
 
         self.version_status_label.setVisible(True)
         if outdated:
+            # Name only the package(s) actually behind PyPI, and build the upgrade
+            # command from those alone. A package whose installed version is newer
+            # than the latest release (e.g. a dev/unreleased build) is never listed,
+            # so we don't wrongly tell the user to "update" something already ahead.
+            names = ", ".join(outdated)
             self.version_status_label.setText(
-                "Update available. Please run:\n"
-                "pip install -U nnInteractive napari-nninteractive"
+                f"Update available for {names}. Please run:\n"
+                f"pip install -U {' '.join(outdated)}"
             )
             self.version_status_label.setStyleSheet("color: #e8830c; font-weight: bold;")  # orange
         else:
