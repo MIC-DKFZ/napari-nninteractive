@@ -174,6 +174,24 @@ The model checkpoint is fixed by the server at startup, so the local checkpoint 
 > (`pip install "napari-nninteractive[local]"`; see Step 3 of [Installation](#installation) above),
 > then restart napari.
 
+### …or run the server in Docker
+
+If you'd rather not install the backend on the GPU box, the server is also published as a Docker
+image with the model **baked in** (a GPU host with the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+is required):
+
+```bash
+docker run --gpus all -p 1527:1527 \
+    -e NN_INTERACTIVE_API_KEY="$(openssl rand -hex 32)" \
+    ghcr.io/mic-dkfz/nninteractive-server:latest
+```
+
+A `lite` tag is also available if you'd rather mount your own checkpoint folder at `/model` (or
+fetch a model by id at startup). See the backend
+[DOCKER.md](https://github.com/MIC-DKFZ/nnInteractive/blob/master/nnInteractive/inference/server/DOCKER.md)
+for both flavours and all configuration options.
+
 ### Things to be aware of
 
 - **Lost connection or idle timeout.** Server-side sessions are reaped after 10 minutes of inactivity (configurable on the server), and a server that goes away (restart, crash, network drop) ends the session too. When this happens the plugin resets the **Connect** button and asks you to reconnect. **Your current segmentation is preserved** on the client: after you reconnect and click **Initialize** again, the image is re-uploaded and the segmentation is restored so you can keep refining where you left off. Only the in-progress prompt markers (the individual points/boxes/scribbles) need to be redone.
