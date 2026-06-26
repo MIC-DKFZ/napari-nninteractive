@@ -40,17 +40,17 @@ Extensive benchmarking demonstrates that nnInteractive far surpasses existing me
 
 ## Installation
 
-nnInteractive runs in one of two modes. **Decide which one you need before installing** — they have different requirements, and only one of them installs PyTorch:
+`napari-nninteractive` installs as a **lightweight, torch-free remote client by default** — it can drive a remote `nninteractive-server` straight away, on any machine. **Local (in-process) inference is an opt-in extra** (`[local]`) that adds the full nnInteractive backend (PyTorch + nnU-Net) and needs an Nvidia GPU.
 
-| Mode | Choose this if… | Installs PyTorch? | Hardware |
-|------|-----------------|-------------------|----------|
-| **Local inference** | this machine runs the model itself | **Yes** (large download) | Linux/Windows + Nvidia GPU — 10 GB VRAM recommended, \<6 GB works for small objects |
-| **Remote client** | this machine only drives a remote `nninteractive-server` | **No** (lightweight, torch-free) | anything — laptop, Mac, no GPU |
+| Mode | Install | PyTorch? | Hardware |
+|------|---------|----------|----------|
+| **Remote client** (default) | `pip install napari-nninteractive` | **No** (lightweight, torch-free) | anything — laptop, Mac, no GPU |
+| **Local inference** | `pip install "napari-nninteractive[local]"` (+ PyTorch) | **Yes** (large download) | Linux/Windows + Nvidia GPU — 10 GB VRAM recommended, \<6 GB works for small objects |
 
 > [!TIP]
-> **On a Mac, or without a capable Nvidia GPU?** Use the **Remote client** install. nnInteractive relies heavily on 3D convolutions, which are prohibitively slow on Apple Silicon (MPS) and CPU hardware — running the model on a remote GPU and driving it from napari is the recommended, and often only practical, way to use it on these machines. See [Remote inference (server / client)](#remote-inference-server--client) for how to set up and connect to the server.
+> **On a Mac, or without a capable Nvidia GPU?** The default install is already exactly what you want — stop after Step 2. nnInteractive relies heavily on 3D convolutions, which are prohibitively slow on Apple Silicon (MPS) and CPU hardware, so running the model on a remote GPU and driving it from napari is the recommended, and often only practical, way to use it on these machines. See [Remote inference (server / client)](#remote-inference-server--client) for how to set up and connect to the server.
 
-### Step 1 — Create a virtual environment (both modes)
+### Step 1 — Create a virtual environment
 
 nnInteractive supports Python 3.10+ and works with Conda, pip, or any other virtual environment. Here's an example using Conda:
 
@@ -59,60 +59,47 @@ conda create -n nnInteractive python=3.12
 conda activate nnInteractive
 ```
 
-Install napari if you don't already have it (both modes):
+Install napari if you don't already have it:
 
 ```bash
 pip install napari[all]
 ```
 
-### Step 2 — Install the plugin
-
-Now follow **either** Option A **or** Option B below — they are mutually exclusive, you do not need both.
-
-#### Option A — Local inference (Nvidia GPU)
-
-**1. Install the correct PyTorch for your system.** Go to the [PyTorch homepage](https://pytorch.org/get-started/locally/) 
-and pick the right configuration. PyTorch must be installed via pip nowadays, which is fine inside a conda environment. 
-For Ubuntu with an Nvidia GPU, pick 'stable', 'Linux', 'Pip', 'Python', CUDA version does not matter (ensure your 
-driver is up to date!). Then execute the command that is displayed, for example:
-```bash
-pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-```
-
-**2. Install the plugin** (this pulls the full nnInteractive backend + nnU-Net):
+### Step 2 — Install the plugin (remote client, torch-free)
 
 ```bash
 pip install napari-nninteractive
 ```
 
-Model weights are downloaded automatically on first use; this can take a couple of minutes depending on your connection.
+This is the **entire** install if you only drive a remote `nninteractive-server`: no PyTorch, no GPU required. The plugin starts in Remote mode — see [Remote inference (server / client)](#remote-inference-server--client) to connect.
 
-#### Option B — Remote client (torch-free, runs anywhere)
+### Step 3 — (Optional) Enable local inference
 
-This mode only talks to a remote `nninteractive-server` and **never installs PyTorch**. Do **not** run the PyTorch step from Option A.
+Only needed if **this** machine runs the model itself. Requires a Linux or Windows computer with an Nvidia GPU.
+
+**1. Install the correct PyTorch for your system.** Go to the [PyTorch homepage](https://pytorch.org/get-started/locally/) and pick the right configuration. PyTorch must be installed via pip nowadays, which is fine inside a conda environment. For Ubuntu with an Nvidia GPU, pick 'stable', 'Linux', 'Pip', 'Python', CUDA version does not matter (ensure your driver is up to date!). Then execute the command that is displayed, for example:
 
 ```bash
-pip install --no-deps napari-nninteractive
-pip install nninteractive-client qtpy napari-nifti napari_toolkit
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
-Why `--no-deps`? A plain `pip install napari-nninteractive` always pulls the full PyTorch + nnU-Net stack, because pip extras can only *add* dependencies, never subtract them. `--no-deps` skips that stack, and `nninteractive-client` (released alongside nnInteractive 2.5.0) supplies the torch-free remote client instead — it pulls only `numpy`/`httpx`/`blosc2`.
+**2. Add the `[local]` extra** (pulls the full nnInteractive backend + nnU-Net):
 
-Started this way, the plugin detects that local inference is unavailable, **starts in Remote mode, and disables the Local switch** (hover it for the reason and the upgrade command). To switch to local inference later, just add the full backend: `pip install nnInteractive`.
+```bash
+pip install "napari-nninteractive[local]"
+```
+
+Quote the brackets so your shell does not treat them as a glob (required in zsh / macOS). Model weights are downloaded automatically on first use; this can take a couple of minutes depending on your connection.
+
+You can do this at **any** time: if you started with the default client-only install and the **Local** switch in the plugin is greyed out, just run the command above (after installing PyTorch) and restart napari to unlock local inference.
 
 ### Install from source (optional)
 
 ```bash
 git clone https://github.com/MIC-DKFZ/napari-nninteractive
 cd napari-nninteractive
-pip install -e .                 # local inference (also needs PyTorch from Option A above)
-```
-
-For a torch-free remote-only checkout, install with `--no-deps` and add the client stack instead:
-
-```bash
-pip install --no-deps -e .
-pip install nninteractive-client qtpy napari-nifti napari_toolkit
+pip install -e .                 # remote client (torch-free) — the default
+pip install -e ".[local]"        # local inference — also install PyTorch first (see Step 3)
 ```
 
 ## Getting Started
@@ -180,10 +167,12 @@ Share the printed API key with your users via whatever channel you use for share
 The model checkpoint is fixed by the server at startup, so the local checkpoint selector is hidden in Remote mode.
 
 > [!NOTE]
-> On a **remote-only install** (the lightweight `nninteractive-client`, without the full
-> `nnInteractive` package) the plugin starts directly in Remote mode and the **Local** switch
-> is greyed out — local inference needs the full backend (`pip install nnInteractive`). The
-> plugin also prints a one-line notice on start-up explaining this.
+> The **default install is the torch-free client**, so unless you added the `[local]` extra
+> the plugin starts directly in Remote mode and the **Local** switch is greyed out. Hover the
+> switch (or read the one-line notice printed on start-up) for the reason and the exact
+> command. To unlock local inference, install PyTorch and the extra
+> (`pip install "napari-nninteractive[local]"`; see Step 3 of [Installation](#installation) above),
+> then restart napari.
 
 ### Things to be aware of
 

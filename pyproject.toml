@@ -26,20 +26,30 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # Default install runs local inference: it pulls the full nnInteractive
-    # stack (torch + nnU-Net). For a lightweight, torch-free remote-only client see the
-    # README (install with --no-deps); pip extras cannot subtract torch from this base.
-    "torch",
+    # The default install is the lightweight, torch-free REMOTE client: it can drive
+    # a remote nninteractive-server out of the box and pulls no PyTorch. For local
+    # inference install the [local] extra (see below / the README), which adds the
+    # full nnInteractive backend (torch + nnU-Net). pip extras can only ADD
+    # dependencies, never subtract, so local is the opt-in extra rather than
+    # something a remote-only user has to strip out of a torch-heavy base.
     "numpy",
     "qtpy",
     "napari-nifti",
-    # Model discovery/download now lives in the nnInteractive backend
-    # (nnInteractive.model_management), so huggingface_hub is pulled in transitively.
-    "nnInteractive>=2.5.0",
     "napari_toolkit",
+    # Torch-free remote client + shared wire protocol (pulls numpy/httpx/blosc2).
+    # Provides nnInteractive.inference.remote; the full nnInteractive package (added
+    # by [local]) depends on this same client, so the two coexist cleanly.
+    "nninteractive-client>=2.5.0",
 ]
 
 [project.optional-dependencies]
+# Local (in-process) inference. Adds the full nnInteractive backend, which pulls
+# PyTorch + nnU-Net and provides model discovery/download. On a GPU machine install
+# the matching CUDA build of torch first (see the README), then:
+#   pip install "napari-nninteractive[local]"
+local = [
+    "nnInteractive>=2.5.0",
+]
 testing = [
     "tox",
     "pytest",  # https://docs.pytest.org/en/latest/contents.html
@@ -47,11 +57,6 @@ testing = [
     "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
     "napari",
     "pyqt5",
-]
-# The default install is already remote-capable; this extra is kept for clarity and
-# pins the nnInteractive version. For a torch-free remote-only client, see the README.
-remote = [
-    "nnInteractive[client]>=2.5.0",
 ]
 
 [project.entry-points."napari.manifest"]

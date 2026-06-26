@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QShortcut,
     QSizePolicy,
     QVBoxLayout,
@@ -34,17 +35,25 @@ from qtpy.QtWidgets import (
 
 from napari_nninteractive._version_check import VersionChecker, _is_outdated
 
-# Shared wording for the disabled-Local tooltip and the start-up notice. The
-# lightweight ``nninteractive-client`` distribution is remote-only and torch-free;
-# local inference lives in the full ``nnInteractive`` package.
-_REMOTE_ONLY_HINT = (
-    "Local inference is unavailable: this is a remote-only install "
-    "(the lightweight 'nninteractive-client', without the full 'nnInteractive' "
-    "package).\n"
-    "You can only connect to a remote nninteractive-server.\n"
-    "To enable local inference, install the full package:\n"
-    "    pip install nnInteractive"
+# Shared wording for the Local tooltip, the start-up notice, and the dialog shown
+# when the user clicks the (greyed) Local switch. Kept as a reason + a how-to so the
+# dialog can present them as headline + details without repeating itself; the tooltip
+# and console print use the two joined. The lightweight ``nninteractive-client``
+# distribution is remote-only and torch-free; local inference lives in the full
+# ``nnInteractive`` package.
+_REMOTE_ONLY_REASON = (
+    "Local inference is unavailable: this is a remote-only (client-only) install "
+    "without the local nnInteractive backend, so only a remote nninteractive-server "
+    "can be used."
 )
+_ENABLE_LOCAL_STEPS = (
+    "To enable local inference (needs an Nvidia GPU):\n"
+    "  1. Install PyTorch yourself — it is NOT installed automatically. Pick the build "
+    "matching your GPU/CUDA from https://pytorch.org/get-started/locally/\n"
+    '  2. pip install "napari-nninteractive[local]"\n'
+    "then restart napari. See the README for details."
+)
+_REMOTE_ONLY_HINT = f"{_REMOTE_ONLY_REASON}\n{_ENABLE_LOCAL_STEPS}"
 
 
 def _local_inference_available() -> bool:
@@ -253,20 +262,17 @@ class BaseGUI(QWidget):
             tooltips="Run inference locally or on a remote nninteractive-server",
         )
 
-        # Remote-only install: grey out the Local button (keeping it visible so the
-        # option is discoverable) and explain why + how to enable local inference.
+        # Remote-only install: local inference is not installed. Keep the Local
+        # button enabled — a *disabled* button swallows clicks and can show no
+        # feedback — but selecting it pops an explanatory dialog and snaps the
+        # switch back to Remote (handled in on_mode_switched). The tooltip explains
+        # why local is unavailable and how to enable it.
         if not self._local_available:
-            self.mode_switch.buttons[0].setEnabled(False)
             self.mode_switch.buttons[0].setToolTip(_REMOTE_ONLY_HINT)
-            # A *disabled* widget receives no hover events in Qt, so the button's own
-            # tooltip may never display — the hover lands on the enabled parent
-            # instead. Put the hint on the switch too so it shows when the user
-            # hovers the greyed Local button, and give the still-usable Remote button
-            # its own tooltip so it doesn't inherit the "unavailable" message.
-            self.mode_switch.setToolTip(_REMOTE_ONLY_HINT)
             self.mode_switch.buttons[1].setToolTip(
                 "Run inference on a remote nninteractive-server"
             )
+            self._grey_local_switch_button()
 
         # --- Local container --- #
         self.local_container = QWidget()
@@ -450,6 +456,31 @@ class BaseGUI(QWidget):
 
         _group_box.setLayout(_layout)
         return _group_box
+
+    def _grey_local_switch_button(self) -> None:
+        """Lightly grey the Local switch button so it reads as unavailable while
+        staying clickable (clicking it explains how to enable local inference).
+
+        The switch resets each button's stylesheet whenever it toggles, so this is
+        re-applied after switch changes (see on_mode_switched).
+        """
+        self.mode_switch.buttons[0].setStyleSheet("color: gray;")
+
+    def _show_local_unavailable_dialog(self) -> None:
+        """Explain why Local is unavailable and how to enable local inference.
+
+        Shown when the user clicks the greyed (but still clickable) Local switch.
+        Deliberately offers no one-click install: the correct PyTorch build depends
+        on the user's GPU/CUDA and must be installed manually first (see the steps).
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Local inference not installed")
+        box.setText(_REMOTE_ONLY_REASON)
+        box.setInformativeText(_ENABLE_LOCAL_STEPS)
+        box.addButton(QMessageBox.Close)
+        box.setDefaultButton(QMessageBox.Close)
+        box.exec()
 
     def _init_image_selection(self) -> QGroupBox:
         """Initializes the image selection combo box in a group box."""

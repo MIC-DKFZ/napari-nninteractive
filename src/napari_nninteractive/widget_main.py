@@ -15,7 +15,6 @@ from qtpy.QtWidgets import QApplication, QWidget
 # (the nnInteractive[local] extra). They are imported lazily inside
 # _construct_local_session() so a remote-only install (nnInteractive[client]) stays
 # PyTorch-free.
-
 from napari_nninteractive.widget_controls import LayerControls
 
 try:
@@ -396,11 +395,23 @@ class nnInteractiveWidget(LayerControls):
 
     def on_mode_switched(self, *args, **kwargs) -> None:
         """Toggle between Local and Remote inference modes."""
+        # Remote-only install: local inference is not installed. Snap the switch
+        # back to Remote and explain how to enable local instead of entering an
+        # unusable Local mode. _uncheck/_check don't re-emit, so no recursion.
+        if not self._local_available and self.mode_switch.index == 0:
+            self.mode_switch._uncheck()
+            self.mode_switch._check(1)
+            self._grey_local_switch_button()  # _uncheck cleared the greyed style
+            self._show_local_unavailable_dialog()
+            return
         if self._remote_connected:
             self._disconnect_remote()
         self._remote_mode = self.mode_switch.index == 1
         self.local_container.setVisible(not self._remote_mode)
         self.remote_container.setVisible(self._remote_mode)
+        # Any toggle resets the switch button styles; restore the greyed Local look.
+        if not self._local_available:
+            self._grey_local_switch_button()
         self.on_model_selected()
 
     def _store_in_progress_segmentation(self) -> None:
