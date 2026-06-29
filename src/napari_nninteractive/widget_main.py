@@ -6,10 +6,18 @@ from typing import Any, Optional
 
 import nnInteractive  # lightweight: only reads the package version at import time
 import numpy as np
+from napari.qt.threading import create_worker
 from napari.utils.notifications import show_warning
 from napari.viewer import Viewer
-from qtpy.QtCore import QEvent
-from qtpy.QtWidgets import QApplication, QWidget
+from qtpy.QtCore import QEvent, Qt
+from qtpy.QtWidgets import (
+    QApplication,
+    QDialog,
+    QLabel,
+    QProgressBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 # NOTE: torch, nnunetv2 and batchgenerators are only needed for *local* inference
 # (the nnInteractive[local] extra). They are imported lazily inside
@@ -83,6 +91,9 @@ class nnInteractiveWidget(LayerControls):
         self._remote_connected = False
         super().__init__(viewer, parent)
         self.session = None
+        # Modal popup shown while the image is uploaded to a remote server
+        # (created in _show_upload_dialog, auto-closed by the upload handlers).
+        self._upload_dialog = None
         # Resume-after-reconnect state. When a remote session is lost we keep
         # the label layer and, on the next Initialize, seed the new session with
         # it instead of starting from scratch. _resume_image_layer pins the
@@ -143,8 +154,10 @@ class nnInteractiveWidget(LayerControls):
         Initialize the inference session and setup layers for interaction.
 
         In remote mode the session must already be claimed via Connect; this
-        method only uploads the image and target buffer. In local mode the
-        session is constructed here from the configured checkpoint.
+        method uploads the image and target buffer on a background worker (so the
+        app does not freeze and a progress popup can be shown) and finishes setup
+        in _on_upload_done. In local mode the session is constructed here from the
+        configured checkpoint and the image is set synchronously.
         """
         if self._remote_mode and not self._remote_connected:
             show_warning("Remote mode: please Connect to a server first.")
@@ -176,20 +189,117 @@ class nnInteractiveWidget(LayerControls):
         if self.source_cfg["ndim"] == 2:
             _data = _data[np.newaxis, ...]
 
+        spacing = self.session_cfg["spacing"]
+        # Resuming after a reconnect: seed the fresh session with the segmentation
+        # we kept so the user continues refining the same object instead of
+        # starting over. Computed on the GUI thread so the worker only does I/O.
+        resume_seg = (
+            (self._data_result > 0).astype(np.uint8)
+            if (self._resuming and np.any(self._data_result))
+            else None
+        )
+
+        if self._remote_mode:
+            # Compress + upload the image off the GUI thread, behind a modal popup
+            # so the user clearly sees it is in progress (and cannot race the
+            # worker). The post-upload setup continues in _on_upload_done, which
+            # also closes the popup.
+            self._show_upload_dialog()
+            self._worker = create_worker(
+                self._upload_image,
+                _data,
+                spacing,
+                self._data_result,
+                resume_seg,
+                _connect={
+                    "returned": self._on_upload_done,
+                    "errored": self._on_upload_errored,
+                },
+                _ignore_errors=True,
+            )
+            return
+
+        # Local mode: set the image synchronously (no network round trip).
         try:
-            self.session.set_image(_data, {"spacing": self.session_cfg["spacing"]})
+            self.session.set_image(_data, {"spacing": spacing})
             self.session.set_target_buffer(self._data_result)
-            # Resuming after a reconnect: seed the fresh session with the
-            # segmentation we kept so the user continues refining the same
-            # object instead of starting over.
-            if self._resuming and np.any(self._data_result):
-                self.session.add_initial_seg_interaction(
-                    (self._data_result > 0).astype(np.uint8), run_prediction=False
-                )
+            if resume_seg is not None:
+                self.session.add_initial_seg_interaction(resume_seg, run_prediction=False)
         except _SESSION_LOST_ERRORS:
             self._handle_session_expired()
             return
+        self._finish_init()
 
+    def _upload_image(self, data, spacing, target_buffer, resume_seg) -> str:
+        """Compress + upload the image to the remote server.
+
+        Runs on a worker thread, so it must not touch any Qt widgets. Returns a
+        status string consumed by _on_upload_done back on the GUI thread:
+        ``"ok"`` on success, ``"session_lost"`` if the lease went away mid-upload.
+        Other failures propagate as exceptions and are handled by
+        _on_upload_errored.
+        """
+        try:
+            self.session.set_image(data, {"spacing": spacing})
+            self.session.set_target_buffer(target_buffer)
+            if resume_seg is not None:
+                self.session.add_initial_seg_interaction(resume_seg, run_prediction=False)
+        except _SESSION_LOST_ERRORS:
+            return "session_lost"
+        return "ok"
+
+    def _on_upload_done(self, result: str) -> None:
+        """GUI-thread continuation after the image-upload worker finishes."""
+        self._close_upload_dialog()
+        if result == "session_lost":
+            self._handle_session_expired()
+            return
+        # The label layer may have been seeded with a resumed segmentation from
+        # the worker thread; repaint so it shows immediately.
+        if self.label_layer_name in self._viewer.layers:
+            self._viewer.layers[self.label_layer_name].refresh()
+        self._finish_init()
+
+    def _on_upload_errored(self, exc: BaseException) -> None:
+        """The upload failed for a non-session reason (server error, write
+        timeout, …). Re-enable Initialize so the user can retry."""
+        self._close_upload_dialog()
+        show_warning(f"Failed to send image to server: {exc}")
+        self._unlock_session()
+
+    def _show_upload_dialog(self) -> None:
+        """Pop up a small modal dialog while the image is compressed + sent to
+        the server. Auto-closed by the upload completion handlers."""
+        self._close_upload_dialog()  # never stack two
+        dialog = QDialog(self)
+        # Title bar with text but no close/min/max buttons: dismissing it must
+        # not look like it cancels the upload (which keeps running regardless).
+        dialog.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.setWindowTitle("nnInteractive")
+        dialog.setFixedWidth(340)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Compressing and sending image to server…"))
+        bar = QProgressBar()
+        bar.setRange(0, 0)  # indeterminate (busy) bar
+        bar.setTextVisible(False)
+        layout.addWidget(bar)
+
+        self._upload_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+
+    def _close_upload_dialog(self) -> None:
+        """Close and drop the upload popup if one is open. Idempotent."""
+        dialog = self._upload_dialog
+        self._upload_dialog = None
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
+
+    def _finish_init(self) -> None:
+        """Post-image setup shared by local (synchronous) and remote (async) init."""
         # Init succeeded; clear the resume state so a normal re-init starts fresh.
         self._resume_after_reconnect = False
         self._resuming = False
@@ -258,67 +368,57 @@ class nnInteractiveWidget(LayerControls):
             "checkpoint_final.pth",
         )
 
-    def _claim_remote_session(self, server_url: str, api_key: Optional[str]):
+    def _claim_remote_session(self, server_url: str, api_key: Optional[str], do_autozoom: bool):
         """Construct a remote session, mapping errors to user-friendly status text.
 
-        Returns the session on success, or None on any failure (status label
-        already updated).
+        Runs on a worker thread, so it must not touch any Qt widgets. Returns
+        ``(session, None)`` on success or ``(None, error_message)`` on any
+        failure; the caller sets the status label on the GUI thread.
         """
         try:
             import httpx
             from nnInteractive.inference.remote import nnInteractiveRemoteInferenceSession
         except ImportError:
-            self.remote_status_label.setText(
-                "Remote mode requires the client extra: pip install 'nnInteractive[client]'"
-            )
-            return None
+            return None, "Remote mode requires the client extra: pip install 'nnInteractive[client]'"
 
         try:
             session = nnInteractiveRemoteInferenceSession(
                 server_url=server_url, api_key=api_key
             )
         except ServerAtCapacityError:
-            self.remote_status_label.setText("Server full; try again later.")
-            return None
+            return None, "Server full; try again later."
         # Connectivity problems must be handled BEFORE the session-lost case below:
         # httpx.ConnectError/ConnectTimeout are subclasses of httpx.TransportError, so a
         # broad TransportError catch would otherwise swallow them and report the wrong cause.
         except httpx.ConnectError:
             # DNS failure, connection refused, no route — nothing is listening/reachable.
-            self.remote_status_label.setText("Cannot reach server; check URL/port.")
-            return None
+            return None, "Cannot reach server; check URL/port."
         except httpx.ConnectTimeout:
-            self.remote_status_label.setText("Connection timed out; check URL/network.")
-            return None
+            return None, "Connection timed out; check URL/network."
         except httpx.TimeoutException:
             # Connected, but the server did not answer the claim in time.
-            self.remote_status_label.setText("Server not responding; try again.")
-            return None
+            return None, "Server not responding; try again."
         except SessionExpiredError:
             # The connection worked but the server refused/expired the claim itself.
-            self.remote_status_label.setText("Claim rejected; try again.")
-            return None
+            return None, "Claim rejected; try again."
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
-                self.remote_status_label.setText("Invalid API key.")
+                return None, "Invalid API key."
             elif "text/html" in e.response.headers.get("content-type", ""):
-                self.remote_status_label.setText("Not an nnInteractive server (proxy?).")
+                return None, "Not an nnInteractive server (proxy?)."
             else:
-                self.remote_status_label.setText(f"Server error {e.response.status_code}.")
-            return None
+                return None, f"Server error {e.response.status_code}."
         except httpx.TransportError:
             # Any other network-level failure (proxy, protocol, broken connection).
-            self.remote_status_label.setText("Network error; check connection.")
-            return None
+            return None, "Network error; check connection."
         except Exception as e:  # noqa: BLE001
-            self.remote_status_label.setText(f"Error: {e}")
-            return None
+            return None, f"Error: {e}"
 
         # Honor the current auto-zoom checkbox on the remote session too.
         with contextlib.suppress(Exception):
-            session.set_do_autozoom(self.propagate_ckbx.isChecked())
+            session.set_do_autozoom(do_autozoom)
 
-        return session
+        return session, None
 
     def on_connect_toggle(self) -> None:
         """Claim a remote session, or release the held one if already connected."""
@@ -335,16 +435,63 @@ class nnInteractiveWidget(LayerControls):
             return
 
         api_key = self.api_key_edit.text() or None
-        session = self._claim_remote_session(server_url, api_key)
+        do_autozoom = self.propagate_ckbx.isChecked()
+
+        # Claim the session off the GUI thread so the window stays responsive and
+        # we can show a status message + progress spinner while connecting. The
+        # GUI updates happen in _on_claim_returned / _on_claim_errored.
+        self._set_connecting(True)
+        self.connect_btn.setText("Connecting…")
+        self.remote_status_label.setText("connecting…")
+        self._viewer.status = f"Connecting to {server_url}…"
+        self._worker = create_worker(
+            self._claim_remote_session,
+            server_url,
+            api_key,
+            do_autozoom,
+            _connect={
+                "returned": lambda result: self._on_claim_returned(result, server_url),
+                "errored": self._on_claim_errored,
+            },
+            _progress={"desc": "Connecting to server"},
+            _ignore_errors=True,
+        )
+
+    def _set_connecting(self, connecting: bool) -> None:
+        """Disable the remote-connection controls while a claim worker runs."""
+        enabled = not connecting
+        for widget in (
+            self.connect_btn,
+            self.mode_switch,
+            self.server_url_edit,
+            self.api_key_edit,
+        ):
+            widget.setEnabled(enabled)
+
+    def _on_claim_returned(self, result, server_url: str) -> None:
+        """GUI-thread continuation after the claim worker finishes."""
+        session, error = result
+        self._set_connecting(False)
         if session is None:
+            self.connect_btn.setText("Connect")
+            self.remote_status_label.setText(error or "connection failed")
+            self._viewer.status = "Connection failed"
             return
 
         self.session = session
         self._remote_connected = True
         self.connect_btn.setText("✓ Connected")
         self.remote_status_label.setText(f"connected ({server_url})")
+        self._viewer.status = "Connected"
         # Connecting unlocks the Initialize button (via the override).
         self._unlock_session()
+
+    def _on_claim_errored(self, exc: BaseException) -> None:
+        """Unexpected error not already mapped inside _claim_remote_session."""
+        self._set_connecting(False)
+        self.connect_btn.setText("Connect")
+        self.remote_status_label.setText(f"Error: {exc}")
+        self._viewer.status = "Connection failed"
 
     def _release_session(self) -> None:
         """Best-effort lease release. Idempotent and safe to call during shutdown
