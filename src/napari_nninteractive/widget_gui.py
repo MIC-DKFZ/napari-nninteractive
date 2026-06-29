@@ -514,7 +514,7 @@ class BaseGUI(QWidget):
 
         self.undo_button = setup_iconbutton(
             _layout,
-            "Undo",
+            "Undo (Ctrl+Z)",
             "step_left",
             self._viewer.theme,
             self.on_undo,
@@ -523,7 +523,7 @@ class BaseGUI(QWidget):
         )
         self.reset_interaction_button = setup_iconbutton(
             _layout,
-            "Reset Object",
+            "Reset Object (R)",
             "delete",
             self._viewer.theme,
             self.on_reset_interactions,
@@ -532,7 +532,7 @@ class BaseGUI(QWidget):
         )
         self.reset_button = setup_iconbutton(
             _layout,
-            "Next Object",
+            "Next Object (M)",
             "step_right",
             self._viewer.theme,
             self.on_next,
@@ -612,7 +612,9 @@ class BaseGUI(QWidget):
 
     def _init_prompt_selection(self) -> QGroupBox:
         """Initializes the prompt selection as switch with options and shortcuts."""
-        _group_box, _layout = setup_vgroupbox(text="Prompt Type:")
+        # The toggle shortcut (T) flips the whole switch rather than picking one
+        # option, so it belongs on the section header, not the individual buttons.
+        _group_box, _layout = setup_vgroupbox(text="Prompt Type (T):")
 
         self.prompt_button = setup_hswitch(
             _layout,
@@ -651,9 +653,12 @@ class BaseGUI(QWidget):
         )
 
         for i, shortcut in enumerate(["P", "B", "S", "L"]):
-            key = QShortcut(QKeySequence(shortcut), self.interaction_button.buttons[i])
+            button = self.interaction_button.buttons[i]
+            key = QShortcut(QKeySequence(shortcut), button)
             key.activated.connect(lambda idx=i: self.interaction_button._on_button_pressed(idx))
-            self.interaction_button.buttons[i].setToolTip(f"press {shortcut}")
+            button.setToolTip(f"press {shortcut}")
+            # Show the shortcut on the label; the switch's options/value stay clean.
+            button.setText(f"{button.text()} ({shortcut})")
 
         _group_box.setLayout(_layout)
         return _group_box
