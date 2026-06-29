@@ -319,6 +319,14 @@ class nnInteractiveWidget(LayerControls):
         self.prompt_button._uncheck()
         self.prompt_button._check(0)
 
+        # Activate the selected interaction tool so its layer is created and made
+        # the active layer. _set_interaction_button_support only sets the button's
+        # checked state (via _check, which does not emit), so without this the tool
+        # button looks active but clicks do nothing until the user re-presses its
+        # shortcut (P/B/S/L).
+        if self.interaction_button.index is not None:
+            self.on_interaction_selected()
+
     def _construct_local_session(self) -> None:
         """Construct the local inference session from self.checkpoint_path."""
         # Heavy, local-only dependencies (the nnInteractive[local] extra). Imported
