@@ -655,8 +655,8 @@ class BaseGUI(QWidget):
         for i, shortcut in enumerate(["P", "B", "S", "L"]):
             button = self.interaction_button.buttons[i]
             key = QShortcut(QKeySequence(shortcut), button)
-            key.activated.connect(lambda idx=i: self.interaction_button._on_button_pressed(idx))
-            button.setToolTip(f"press {shortcut}")
+            key.activated.connect(lambda idx=i: self.on_interaction_shortcut(idx))
+            button.setToolTip(f"press {shortcut} to toggle")
             # Show the shortcut on the label; the switch's options/value stay clean.
             button.setText(f"{button.text()} ({shortcut})")
 
@@ -763,6 +763,22 @@ class BaseGUI(QWidget):
         print(
             "on_interaction_selected", self.interaction_button.index, self.interaction_button.value
         )
+
+    def on_interaction_shortcut(self, idx: int) -> None:
+        """Handle a P/B/S/L tool shortcut, toggling the tool on press.
+
+        Pressing the shortcut of the tool that is already active deselects it so no
+        further prompts are added; pressing any other shortcut activates its tool.
+        """
+        if self.interaction_button.index == idx:
+            self.interaction_button._uncheck()
+            self.on_interaction_deselected()
+        else:
+            self.interaction_button._on_button_pressed(idx)
+
+    def on_interaction_deselected(self, *args, **kwargs) -> None:
+        """Placeholder method for when the active interaction tool is deselected."""
+        print("on_interaction_deselected")
 
     def on_run(self, *args, **kwargs) -> None:
         """Placeholder method for run operation"""
