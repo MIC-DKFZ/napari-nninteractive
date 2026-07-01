@@ -534,6 +534,23 @@ class LayerControls(BaseGUI):
             warnings.simplefilter("ignore", FutureWarning)
             self._viewer.window._qt_viewer.setFocus()
 
+    def on_interaction_deselected(self) -> None:
+        """Deactivate the current interaction tool.
+
+        Clears the active interaction layer selection so the viewer returns to a
+        pan/zoom state and no new prompts are added until a tool is selected again.
+        Clearing the selection emits ``selection.events.active`` which routes through
+        ``on_layer_selected`` to uncheck the tool button; the explicit reset here also
+        covers the case where no interaction layer was active.
+        """
+        self.interaction_type = None
+        self.interaction_button._uncheck()
+        self._viewer.layers.selection.clear()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            self._viewer.window._qt_viewer.setFocus()
+
     def on_run(self):
         if self.session is not None:
             self.session._predict()
