@@ -302,7 +302,7 @@ class LayerControls(BaseGUI):
             "ndim": image_layer.ndim,
             "shape": _shape,
             "affine": image_layer.affine,
-            "scale": image_layer._scale,
+            "scale": _scale,
             "translate": image_layer.translate,
             "rotate": image_layer.rotate,
             "shear": image_layer.shear,
