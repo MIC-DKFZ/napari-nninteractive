@@ -292,14 +292,15 @@ class LayerControls(BaseGUI):
             "name": image_name,
             "model": model_name,
             "ndim": image_layer.ndim,
-            "shape": image_layer.data.shape,
+            "shape": _shape,
             "affine": image_layer.affine,
-            "scale": image_layer.scale,
+            "scale": image_layer._scale,
             "translate": image_layer.translate,
             "rotate": image_layer.rotate,
             "shear": image_layer.shear,
             "source": image_layer.source,
             "metadata": image_layer.metadata,
+            "level": _level,
         }
 
         self.session_cfg = self.source_cfg.copy()
