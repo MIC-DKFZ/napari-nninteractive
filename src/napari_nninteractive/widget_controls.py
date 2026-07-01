@@ -8,6 +8,7 @@ from napari._qt.layer_controls.qt_layer_controls_container import layer_to_contr
 from napari.layers import Labels
 from napari.layers.base._base_constants import ActionType
 from napari.utils.notifications import show_warning
+from napari.utils.notifications import show_info
 from napari.utils.transforms import Affine
 from napari.viewer import Viewer
 from qtpy.QtWidgets import QFileDialog, QWidget
@@ -287,6 +288,12 @@ class LayerControls(BaseGUI):
         else:
             _shape = image_layer.data.shape
             _scale = image_layer.scale
+        
+        if getattr(image_layer, "multiscale", False):
+            show_info(
+                f"nnInteractive: segmenting at level {_level} "
+                f"({' x '.join(str(int(s)) for s in _shape)} px)"
+        
 
         self.source_cfg = {
             "name": image_name,
