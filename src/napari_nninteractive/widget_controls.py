@@ -23,6 +23,7 @@ from napari_nninteractive.layers.scribble_layer import ScribbleLayer
 from napari_nninteractive.utils.affine import is_orthogonal
 from napari_nninteractive.utils.utils import ColorMapper, determine_layer_index
 from napari_nninteractive.widget_gui import BaseGUI
+from napari_nninteractive.resolution_selector import ResolutionLevelDialog
 
 layer_to_controls[SinglePointLayer] = CustomQtPointsControls
 layer_to_controls[BBoxLayer] = CustomQtBBoxControls
@@ -212,6 +213,20 @@ class LayerControls(BaseGUI):
         self._viewer.layers[self.label_layer_name].data = self._data_result
 
     # Event Handlers
+    def _select_resolution_level(self, image_layer) -> int:
+        """Pick the pyramid level to segment for a (possibly multiscale) layer.
+
+        Returns 0 for single-scale layers, the user's choice for multiscale
+        layers, or -1 if the user cancels (the caller should abort init).
+        """
+        if not getattr(image_layer, "multiscale", False) or len(image_layer.data) <= 1:
+            return 0
+        shapes = [arr.shape for arr in image_layer.data]
+        dialog = ResolutionLevelDialog(shapes, scale=image_layer.scale, parent=self)
+        if not dialog.exec():
+            return -1
+        return dialog.selected_level()
+
     def on_init(self, *args, **kwargs) -> None:
         """
         Initializes the session by configuring the selected model and image and creating a label layer.
@@ -253,9 +268,26 @@ class LayerControls(BaseGUI):
                 self.checkpoint_path = ensure_model_available(model_name)
             print(f"Using Model {model_name} at : {self.checkpoint_path}")
 
-        # --- DATA HANDLING --- #
         # Get everything we need from the image layer
         image_layer = self._viewer.layers[image_name]
+
+        _level = self._select_resolution_level(image_layer)
+        if _level < 0:
+            self.source_cfg = None
+            self.session_cfg = None
+            return  # user cancelled initialization
+
+        if getattr(image_layer, "multiscale", False):
+            # Derive shape and scale from the chosen level so the whole session
+            # (scribble layer, result mask, prompt coordinates) lives in that
+            # level's grid and still overlays the displayed image in world units.
+            _shape = tuple(int(s) for s in image_layer.data[_level].shape)
+            _full = np.asarray(image_layer.data[0].shape, dtype=float)
+            _scale = np.asarray(image_layer.scale, dtype=float) * (_full / np.asarray(_shape))
+        else:
+            _shape = image_layer.data.shape
+            _scale = image_layer.scale
+
         self.source_cfg = {
             "name": image_name,
             "model": model_name,

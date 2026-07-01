@@ -31,6 +31,7 @@ try:
         SessionExpiredError,
     )
 except ImportError:  # remote client extra not installed
+
     class SessionExpiredError(Exception):  # type: ignore[no-redef]
         pass
 
@@ -164,6 +165,10 @@ class nnInteractiveWidget(LayerControls):
             return
 
         super().on_init(*args, **kwargs)
+        if self.session_cfg is None:
+            # Initialization was cancelled (e.g. the resolution-level dialog was
+            # dismissed); nothing was configured, so stop here.
+            return
 
         if self.session is None:
             self._construct_local_session()
@@ -183,7 +188,12 @@ class nnInteractiveWidget(LayerControls):
             }
         )
 
-        _data = self._viewer.layers[self.session_cfg["name"]].data
+        _layer = self._viewer.layers[self.session_cfg["name"]]
+        _data = _layer.data
+        if _layer.multiscale:
+            _data = _data[self.session_cfg.get("level", 0)]
+
+        _data = np.asarray(_data)
         _data = _data[np.newaxis, ...]
 
         if self.source_cfg["ndim"] == 2:
@@ -387,12 +397,13 @@ class nnInteractiveWidget(LayerControls):
             import httpx
             from nnInteractive.inference.remote import nnInteractiveRemoteInferenceSession
         except ImportError:
-            return None, "Remote mode requires the client extra: pip install 'nnInteractive[client]'"
+            return (
+                None,
+                "Remote mode requires the client extra: pip install 'nnInteractive[client]'",
+            )
 
         try:
-            session = nnInteractiveRemoteInferenceSession(
-                server_url=server_url, api_key=api_key
-            )
+            session = nnInteractiveRemoteInferenceSession(server_url=server_url, api_key=api_key)
         except ServerAtCapacityError:
             return None, "Server full; try again later."
         # Connectivity problems must be handled BEFORE the session-lost case below:
@@ -777,10 +788,14 @@ class nnInteractiveWidget(LayerControls):
                         self.session.add_bbox_interaction(bbox, _prompt, _auto_run)
                     elif _index == 2:
                         crop_3d, bbox = data
-                        self.session.add_scribble_interaction(crop_3d, _prompt, _auto_run, interaction_bbox=bbox)
+                        self.session.add_scribble_interaction(
+                            crop_3d, _prompt, _auto_run, interaction_bbox=bbox
+                        )
                     elif _index == 3:
                         crop_3d, bbox = data
-                        self.session.add_lasso_interaction(crop_3d, _prompt, _auto_run, interaction_bbox=bbox)
+                        self.session.add_lasso_interaction(
+                            crop_3d, _prompt, _auto_run, interaction_bbox=bbox
+                        )
                 except _SESSION_LOST_ERRORS:
                     self._handle_session_expired()
                     return
@@ -799,7 +814,9 @@ class nnInteractiveWidget(LayerControls):
         if self.session is None:
             return
         if not getattr(self.session, "supports_undo", False):
-            show_warning("Undo is not supported by this server. Please update nninteractive-server.")
+            show_warning(
+                "Undo is not supported by this server. Please update nninteractive-server."
+            )
             return
         try:
             undone = self.session.undo()

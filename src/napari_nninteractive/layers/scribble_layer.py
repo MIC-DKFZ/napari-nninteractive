@@ -1,6 +1,7 @@
 import numpy as np
 from napari.layers import Labels
 from napari.layers.base._base_constants import ActionType
+from napari.utils.notifications import show_warning
 
 from napari_nninteractive.layers.abstract_layer import BaseLayerClass
 
@@ -56,7 +57,9 @@ class ScribbleLayer(BaseLayerClass, Labels):
             idx = [slice(None)] * 3
             idx[self._last_dim_not_displayed] = self._last_slice_id
             slice_view = self.data[tuple(idx)]  # integer index on one axis -> a view
-            slice_view[slice_view == 1] = self.prompt_index + 2  # in-place, writes back to self.data
+            slice_view[slice_view == 1] = (
+                self.prompt_index + 2
+            )  # in-place, writes back to self.data
         else:
             # Defensive fallback: run is normally called only after a commit recorded a slice.
             self.data[self.data == 1] = self.prompt_index + 2
@@ -74,6 +77,15 @@ class ScribbleLayer(BaseLayerClass, Labels):
         Commits the current staged history for the layer and marks the action as finished.
         """
         super()._commit_staged_history()
+        if len(self._slice_input.not_displayed) == 0:
+            # 3D (volume) view: there is no out-of-plane axis, so a scribble cannot
+            # be mapped to a single slice. nnInteractive scribbles are a 2D-slice
+            # interaction, so record nothing and ask the user to switch to 2D.
+            self._last_dim_not_displayed = None
+            self._last_slice_id = None
+            self._is_free = False
+            show_warning("Scribbles must be drawn in 2D view - toggle off the 3D view to scribble.")
+            return
         dim = int(self._slice_input.not_displayed[0])
         self._last_dim_not_displayed = dim
         sid = int(np.rint(float(self._data_slice.point[dim])))
