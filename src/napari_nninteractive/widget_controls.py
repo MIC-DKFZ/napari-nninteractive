@@ -7,6 +7,7 @@ import numpy as np
 from napari._qt.layer_controls.qt_layer_controls_container import layer_to_controls
 from napari.layers import Labels
 from napari.layers.base._base_constants import ActionType
+from napari.utils.colormaps import DirectLabelColormap
 from napari.utils.notifications import show_warning
 from napari.utils.transforms import Affine
 from napari.viewer import Viewer
@@ -54,10 +55,17 @@ class LayerControls(BaseGUI):
         }
 
         self.label_layer_name = "nnInteractive - Label Layer"
-        self.semantic_layer_name = "nnInteractive - Label Layer"
         self.colormap = ColorMapper(49, seed=0.5, background_value=0)
         self._scribble_brush_size = 5
         self.object_index = 0
+        # Accumulated bbox (union of the backend's per-change bboxes) of the in-progress
+        # object, so it can be merged into the instance map by touching only the sub-volume
+        # it occupies instead of scanning the whole array. ``None`` until a change is tracked;
+        # ``_object_bbox_reliable`` goes False whenever a change cannot be localized (a backend
+        # that returns no bbox, a no-op predict, or a whole-buffer seed), which forces a safe
+        # global merge for that object.
+        self._current_object_bbox = None
+        self._object_bbox_reliable = True
         # Names of the interaction layers that committed an interaction, newest last. Used by
         # on_undo to remove the visual marker of the most recently undone interaction. The
         # backend supports single-level undo, so only the top entry is ever undoable; older
@@ -383,8 +391,10 @@ class LayerControls(BaseGUI):
         self._resume_image_layer = image_layer
         self._resuming = resume
 
-        # Fresh image/model pair: nothing from a previous object is undoable.
+        # Fresh image/model pair: nothing from a previous object is undoable, and the
+        # in-progress object's tracked extent starts empty.
         self._interaction_history = []
+        self._reset_object_bbox()
 
         # Lock the Session
         self._lock_session()
@@ -392,6 +402,8 @@ class LayerControls(BaseGUI):
     def on_reset_interactions(self):
         """Reset only the current interaction"""
         super().on_reset_interactions()
+        # The object was emptied, so its tracked extent restarts too.
+        self._reset_object_bbox()
         self.on_layer_selected()
 
     def _next_object_index(self) -> int:
@@ -399,7 +411,7 @@ class LayerControls(BaseGUI):
         this image, so a new session does not restart at 1 and collide with the
         names/colors of objects from a previous session. Considers both the
         per-object ``object N - <name>`` layers and the values of the aggregated
-        ``semantic map - <name>`` layer. Returns 0 when nothing is present.
+        ``instance map - <name>`` layer. Returns 0 when nothing is present.
         """
         name = self.session_cfg["name"]
         # determine_layer_index returns max(N) + 1 over the "object N - <name>"
@@ -410,36 +422,97 @@ class LayerControls(BaseGUI):
             )
             - 1
         )
-        sem_name = f"semantic map - {name}"
-        if sem_name in self._viewer.layers:
-            highest = max(highest, int(self._viewer.layers[sem_name].data.max()))
+        inst_name = f"instance map - {name}"
+        if inst_name in self._viewer.layers:
+            highest = max(highest, int(self._viewer.layers[inst_name].data.max()))
         return max(highest, 0)
+
+    def _reset_object_bbox(self) -> None:
+        """Start tracking a fresh in-progress object's extent (call when a new object begins)."""
+        self._current_object_bbox = None
+        self._object_bbox_reliable = True
+
+    def _accumulate_object_bbox(self, bbox) -> None:
+        """Fold a backend-reported changed-region bbox into the current object's extent.
+
+        ``bbox`` is a half-open ``[[lb, ub], ...]`` per spatial axis, already clipped to the
+        target buffer so it indexes the label layer directly, or ``None`` when the change could
+        not be localized -- in which case the object falls back to a whole-volume merge.
+        """
+        if bbox is None:
+            self._object_bbox_reliable = False
+            return
+        if self._current_object_bbox is None:
+            self._current_object_bbox = [list(b) for b in bbox]
+        else:
+            self._current_object_bbox = [
+                [min(cur[0], new[0]), max(cur[1], new[1])]
+                for cur, new in zip(self._current_object_bbox, bbox)
+            ]
 
     def _store_current_object(self) -> None:
         """Promote the in-progress label layer to a finished object.
 
-        Either as its own ``object N - <name>`` layer or, in instance-aggregation
-        mode, merged into the shared ``semantic map - <name>`` layer. Advances
-        object_index so subsequent objects keep consistent numbering and colours.
-        Shared by ``on_next`` and by the reset paths that offer to keep the
-        in-progress segmentation before tearing down the session.
+        The Settings > Label Aggregation mode decides how (read here at commit time,
+        so it can be changed between objects):
+
+        * ``Separate layers``: copy it to its own ``object N - <name>`` binary layer.
+        * ``Single map (keep existing)``: merge it into the shared ``instance map -
+          <name>`` layer at the object's index, writing only where the map is still
+          background so earlier objects are preserved.
+        * ``Single map (overwrite)``: merge it in the same way, but overwrite existing
+          labels wherever objects overlap.
+
+        Advances object_index so subsequent objects keep consistent numbering and
+        colours. Shared by ``on_next`` and by the reset / export paths that fold in
+        the in-progress object before it would otherwise be lost.
         """
         label_layer = self._viewer.layers[self.label_layer_name]
-        if not self.instance_aggregation_ckbx.isChecked():
+        object_value = self.object_index + 1
+        mode = self.label_aggregation_combo.currentText()
 
-            _name = f"object {self.object_index+1} - {self.session_cfg['name']}"
+        if mode == self.AGG_BINARY:
+            _name = f"object {object_value} - {self.session_cfg['name']}"
             self.add_label_layer(label_layer.data.copy(), _name)
             self._viewer.layers[_name].colormap = self.colormap[self.object_index]
-
         else:
-            _sem_name = f"semantic map - {self.session_cfg['name']}"
-            if _sem_name not in self._viewer.layers:
-                self.add_label_layer(np.zeros_like(label_layer.data), _sem_name)
+            # aggregate (keep) / aggregate (overwrite): merge into one instance map,
+            # each object written as its own integer value.
+            _inst_name = f"instance map - {self.session_cfg['name']}"
+            if _inst_name not in self._viewer.layers:
+                self.add_label_layer(np.zeros_like(label_layer.data), _inst_name)
+            inst_layer = self._viewer.layers[_inst_name]
 
-            sem_layer = self._viewer.layers[_sem_name]
+            # Merge only the sub-volume this object occupies, when we could track its
+            # extent (union of the backend's changed-region bboxes). Slicing yields views,
+            # so writing through them updates the instance map in place. Falls back to a
+            # whole-volume merge when the extent is unknown (older backend, whole-buffer
+            # seed, etc.). Outside the object's bbox its mask is all-zero, so a local merge
+            # produces exactly the same result as a global one.
+            if self._object_bbox_reliable and self._current_object_bbox is not None:
+                slc = tuple(slice(int(lb), int(ub)) for lb, ub in self._current_object_bbox)
+            else:
+                slc = tuple(slice(None) for _ in range(label_layer.data.ndim))
 
-            sem_layer.data[label_layer.data == 1] = self.object_index + 1
-            sem_layer.refresh()
+            sub_obj = label_layer.data[slc]
+            sub_inst = inst_layer.data[slc]
+            object_mask = sub_obj == 1
+            if mode == self.AGG_KEEP:
+                # Preserve earlier objects: only paint still-background voxels.
+                object_mask = object_mask & (sub_inst == 0)
+            sub_inst[object_mask] = object_value
+
+            # Colour each object in the instance map with the same per-object colour
+            # its working-layer preview used. The preview stores the object as value 1
+            # and colours it via self.colormap[object_index]; here the object is value
+            # object_index+1, so map value v back to self.colormap[v-1] to keep colours
+            # consistent across the commit. Rebuilt each time so newly added values (and
+            # any picked up on resume) are covered.
+            color_dict = {None: (0, 0, 0, 0), 0: (0, 0, 0, 0)}
+            for _v in range(1, object_value + 1):
+                color_dict[_v] = self.colormap[_v - 1][1]
+            inst_layer.colormap = DirectLabelColormap(color_dict=color_dict)
+            inst_layer.refresh()
 
         self.object_index += 1
 
@@ -454,6 +527,8 @@ class LayerControls(BaseGUI):
         # Store the current object and recolour the working layer for the next one.
         self._store_current_object()
         self._viewer.layers[self.label_layer_name].colormap = self.colormap[self.object_index]
+        # The next object starts with a fresh (empty) tracked extent.
+        self._reset_object_bbox()
 
         self._clear_layers()
         self.prompt_button._uncheck()
@@ -525,9 +600,10 @@ class LayerControls(BaseGUI):
             self._viewer.layers[self.label_layer_name].refresh()
 
     def on_interaction(self, event: Any):
+        # Interactions are always added automatically now that the Manual Control
+        # section (with its Auto Add / Auto Run toggles) has been removed.
         if (
-            self.add_ckbx.isChecked()
-            and event.action == ActionType.ADDED
+            event.action == ActionType.ADDED
             and not self._viewer.layers[event.source.name].is_free()
         ):
             self._viewer.layers[event.source.name].refresh()
@@ -596,20 +672,20 @@ class LayerControls(BaseGUI):
             return
 
         elif Path(_output_dir).is_dir():
+            # Fold any uncommitted in-progress object in first. In aggregate mode it is
+            # only merged into the instance map on Next Object, so without this an
+            # export mid-object would silently drop the last object. Done only after a
+            # valid directory is chosen, so cancelling the dialog never commits.
+            if self.label_layer_name in self._viewer.layers and np.any(
+                self._viewer.layers[self.label_layer_name].data
+            ):
+                self.on_next()
+
             _output_dir = Path(_output_dir).joinpath(f"{_output_file}_nnInteractive")
             Path(_output_dir).mkdir(exist_ok=True)
 
             for _layer in self._viewer.layers:
-                if self.label_layer_name == _layer.name and np.any(_layer.data):
-                    _index = determine_layer_index(
-                        names=[
-                            layer.name for layer in self._viewer.layers if isinstance(layer, Labels)
-                        ],
-                        prefix="object ",
-                        postfix=f" - {self.source_cfg['name']}",
-                    )
-                    _file_name = f"{_output_file}_{str(_index).zfill(4)}{_dtype}"
-                elif _layer.name.startswith("object ") and _layer.name.endswith(
+                if _layer.name.startswith("object ") and _layer.name.endswith(
                     f" - {self.source_cfg['name']}"
                 ):
                     _index = int(
@@ -618,8 +694,8 @@ class LayerControls(BaseGUI):
                         )
                     )
                     _file_name = f"{_output_file}_{str(_index).zfill(4)}{_dtype}"
-                elif f"semantic map - {self.session_cfg['name']}" == _layer.name:
-                    _file_name = f"{_output_file}_semantic_map{_dtype}"
+                elif f"instance map - {self.session_cfg['name']}" == _layer.name:
+                    _file_name = f"{_output_file}_instance_map{_dtype}"
 
                 else:
                     continue

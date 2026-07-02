@@ -4,7 +4,12 @@ from typing import Optional
 
 from napari.layers import Image, Labels
 from napari.viewer import Viewer
-from napari_toolkit.containers import setup_vcollapsiblegroupbox, setup_vgroupbox, setup_vscrollarea
+from napari_toolkit.containers import (
+    setup_tabwidget,
+    setup_vcollapsiblegroupbox,
+    setup_vgroupbox,
+    setup_vscrollarea,
+)
 from napari_toolkit.widgets import (
     setup_acknowledgements,
     setup_checkbox,
@@ -86,6 +91,12 @@ class BaseGUI(QWidget):
         parent (Optional[QWidget], optional): The parent widget. Defaults to None.
     """
 
+    # Label aggregation modes (Settings > Label Aggregation). The order here is the
+    # dropdown order; LayerControls._store_current_object switches on these exact strings.
+    AGG_BINARY = "Separate layers"
+    AGG_KEEP = "Single map (keep existing)"
+    AGG_OVERWRITE = "Single map (overwrite)"
+
     def __init__(self, viewer: Viewer, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._width = 300
@@ -93,6 +104,12 @@ class BaseGUI(QWidget):
         self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self._viewer = viewer
         self.session_cfg = None
+        # Whether a session is currently initialized (locked). Drives the Initialize
+        # button's toggle behaviour: initialize when idle, uninitialize when live.
+        self._session_locked = False
+        # True when the live local session fell back to the CPU (no usable CUDA GPU);
+        # drives the persistent red warning shown below Initialize.
+        self._local_running_on_cpu = False
         # Whether local inference is installed. A remote-only
         # 'nninteractive-client' install cannot run it, so we start in Remote
         # mode and disable the Local controls (see _init_model_selection).
@@ -108,20 +125,42 @@ class BaseGUI(QWidget):
         _main_layout = QVBoxLayout()
         self.setLayout(_main_layout)
 
-        _scroll_widget, _scroll_layout = setup_vscrollarea(_main_layout)
+        # The GUI is split across two tabs to keep the day-to-day segmentation
+        # workflow uncluttered: "Interact" holds everything used while segmenting,
+        # "Settings" holds set-once configuration (model, inference options, label
+        # aggregation). Each tab scrolls independently so neither overflows the
+        # (narrow, possibly short) napari dock.
+        _interact_page = QWidget()
+        _interact_outer = QVBoxLayout(_interact_page)
+        _interact_outer.setContentsMargins(0, 0, 0, 0)
+        _, _interact_layout = setup_vscrollarea(_interact_outer)
+        _interact_layout.addWidget(self._init_image_selection())  # Image Selection
+        _interact_layout.addWidget(self._init_control_buttons())  # Init / Undo / Reset / Next
+        _interact_layout.addWidget(self._init_init_buttons())  # Initialize with Segmentation
+        _interact_layout.addWidget(self._init_prompt_selection())  # Prompt Selection
+        _interact_layout.addWidget(self._init_interaction_selection())  # Interaction Tools
+        _interact_layout.addWidget(self._init_export_button())  # Export
+        _ = setup_acknowledgements(_interact_layout, width=self._width)  # Acknowledgements
 
-        _scroll_layout.addWidget(self._init_model_selection())  # Model Selection
-        _scroll_layout.addWidget(self._init_image_selection())  # Image Selection
-        _scroll_layout.addWidget(self._init_control_buttons())  # Init and Reset Button
-        _scroll_layout.addWidget(self._init_init_buttons())  # Init and Reset Button
-        _scroll_layout.addWidget(self._init_prompt_selection())  # Prompt Selection
-        _scroll_layout.addWidget(self._init_interaction_selection())  # Interaction Selection
-        _scroll_layout.addWidget(self._init_run_button())  # Run Button
-        _scroll_layout.addWidget(self._init_export_button())  # Run Button
+        _settings_page = QWidget()
+        _settings_outer = QVBoxLayout(_settings_page)
+        _settings_outer.setContentsMargins(0, 0, 0, 0)
+        _, _settings_layout = setup_vscrollarea(_settings_outer)
+        _settings_layout.addWidget(self._init_model_selection())  # Model Selection
+        _settings_layout.addWidget(self._init_inference_options())  # Auto-zoom
+        _settings_layout.addWidget(self._init_label_aggregation())  # Label Aggregation
 
-        _ = setup_acknowledgements(_scroll_layout, width=self._width)  # Acknowledgements
+        _tabs = setup_tabwidget(
+            _main_layout,
+            widgets=[_interact_page, _settings_page],
+            page_names=["Interact", "Settings"],
+        )
+        # Let the tabs fill the dock vertically (setup_tabwidget defaults to a
+        # Fixed vertical policy, which would leave dead space below short tabs).
+        _tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Update notice, below the logo (filled in asynchronously once PyPI has been queried).
+        # Update notice, shown below the tabs so it is visible from either tab
+        # (filled in asynchronously once PyPI has been queried; hidden until then).
         self.version_status_label = QLabel("")
         self.version_status_label.setWordWrap(True)
         self.version_status_label.setAlignment(Qt.AlignLeft)
@@ -130,7 +169,7 @@ class BaseGUI(QWidget):
             Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
         )
         self.version_status_label.setVisible(False)
-        _scroll_layout.addWidget(self.version_status_label)
+        _main_layout.addWidget(self.version_status_label)
 
         self._unlock_session()
         self._viewer.bind_key("Ctrl+Q", self._close, overwrite=True)
@@ -183,28 +222,26 @@ class BaseGUI(QWidget):
 
     def _unlock_session(self):
         """Unlocks the session, enabling model and image selection, and initializing controls."""
+        self._session_locked = False
         self.init_button.setEnabled(True)
+        self._update_init_button_text(initialized=False)
+        # No live session -> never show the CPU-fallback warning.
+        self._update_device_warning()
 
         # Reset interaction capabilities until a checkpoint is loaded.
         self._set_interaction_button_support({0: True, 1: True, 2: True, 3: True})
 
         self.reset_button.setEnabled(False)
-        self.instance_aggregation_ckbx.setEnabled(False)
         self.prompt_button.setEnabled(False)
         self.interaction_button.setEnabled(False)
-        self.run_button.setEnabled(False)
-        self.run_ckbx.setEnabled(False)
         self.export_button.setEnabled(False)
         self.reset_interaction_button.setEnabled(False)
         self.undo_button.setEnabled(False)
-        self.propagate_ckbx.setEnabled(False)
         self.label_for_init.setEnabled(False)
         self.class_for_init.setEnabled(False)
         self.auto_refine.setEnabled(False)
         # self.empty_mask_btn.setEnabled(False)
         self.load_mask_btn.setEnabled(False)
-        self.add_button.setEnabled(False)
-        self.add_ckbx.setEnabled(False)
 
     def _set_interaction_button_support(self, supported: dict[int, bool]) -> None:
         """Enable/disable interaction tool buttons and keep a valid active selection."""
@@ -224,25 +261,22 @@ class BaseGUI(QWidget):
 
     def _lock_session(self):
         """Locks the session, disabling model and image selection, and enabling control buttons."""
-        self.init_button.setEnabled(False)
+        self._session_locked = True
+        # Kept enabled so it can act as an uninitialize toggle while a session is live.
+        self.init_button.setEnabled(True)
+        self._update_init_button_text(initialized=True)
 
         self.reset_button.setEnabled(True)
-        self.instance_aggregation_ckbx.setEnabled(True)
         self.prompt_button.setEnabled(True)
         self.interaction_button.setEnabled(True)
-        self.run_button.setEnabled(True)
-        self.run_ckbx.setEnabled(True)
         self.export_button.setEnabled(True)
         self.reset_interaction_button.setEnabled(True)
         self.undo_button.setEnabled(True)
-        self.propagate_ckbx.setEnabled(True)
         self.label_for_init.setEnabled(True)
         self.class_for_init.setEnabled(True)
         self.auto_refine.setEnabled(True)
         # self.empty_mask_btn.setEnabled(True)
         self.load_mask_btn.setEnabled(True)
-        self.add_button.setEnabled(True)
-        self.add_ckbx.setEnabled(True)
 
     def _clear_layers(self):
         """Abstract function to clear all needed layers"""
@@ -335,12 +369,9 @@ class BaseGUI(QWidget):
         btn.setFixedWidth(30)
 
         # --- Advanced (local) options --- #
-        # These are niche settings, so they live in a collapsible section that is folded
-        # by default. The fold state and the chosen values are persisted via QSettings.
-        advanced_collapsed = self._settings.value("advanced_collapsed", True, type=bool)
-        self.advanced_box, _advanced_layout = setup_vcollapsiblegroupbox(
-            _local_layout, text="Advanced", collapsed=advanced_collapsed
-        )
+        # Shown inline now that these live on the roomier Settings tab, instead of
+        # being folded away. The chosen values are still persisted via QSettings.
+        self.advanced_box, _advanced_layout = setup_vgroupbox(_local_layout, text="Advanced")
 
         self.use_torch_compile_ckbx = setup_checkbox(
             _advanced_layout,
@@ -395,7 +426,8 @@ class BaseGUI(QWidget):
             _key_layout,
             "Connect",
             function=self.on_connect_toggle,
-            tooltips="Claim a session on the nninteractive-server",
+            tooltips="Optional: test the connection to the nninteractive-server. "
+            "Initialize connects automatically if you skip this.",
         )
         self.connect_btn.setFixedWidth(110)
 
@@ -434,10 +466,7 @@ class BaseGUI(QWidget):
             lambda t: self._settings.setValue("server_url", t)
         )
 
-        # Persist the advanced options (fold state + chosen values) between sessions.
-        self.advanced_box.toggled.connect(
-            lambda expanded: self._settings.setValue("advanced_collapsed", not expanded)
-        )
+        # Persist the advanced option values between sessions.
         self.use_torch_compile_ckbx.toggled.connect(
             lambda checked: self._settings.setValue("use_torch_compile", checked)
         )
@@ -502,7 +531,7 @@ class BaseGUI(QWidget):
             "Initialize",
             "new_labels",
             self._viewer.theme,
-            self.on_init,
+            self.on_init_button,
             tooltips="Initialize the Model and Image Pair",
         )
 
@@ -511,6 +540,18 @@ class BaseGUI(QWidget):
         self.model_license_label = QLabel("")
         self.model_license_label.setWordWrap(True)
         _layout.addWidget(self.model_license_label)
+
+        # Persistent CPU-fallback warning, shown below Initialize only after a local
+        # session was built on the CPU (no usable CUDA GPU). CPU inference is very slow
+        # and a transient notification is easy to miss, so this stays visible until the
+        # next (successful) Initialize. Hidden by default; toggled by _update_device_warning().
+        self.device_warning_label = QLabel("")
+        self.device_warning_label.setWordWrap(True)
+        self.device_warning_label.setTextFormat(Qt.RichText)
+        self.device_warning_label.setOpenExternalLinks(True)
+        self.device_warning_label.setStyleSheet("color: #d9534f; font-weight: bold; padding: 4px;")
+        self.device_warning_label.setVisible(False)
+        _layout.addWidget(self.device_warning_label)
 
         self.undo_button = setup_iconbutton(
             _layout,
@@ -540,16 +581,26 @@ class BaseGUI(QWidget):
             shortcut="M",
         )
 
-        self.instance_aggregation_ckbx = setup_checkbox(
-            _layout,
-            "Instance Aggregation",
-            False,
-            tooltips="If checked: Add all objects to a single layer. In the case of overlap newer objects overwrite older objects.\n"
-            "Otherwise: Create a separate layer for each object. ",
-        )
-
         _group_box.setLayout(_layout)
         return _group_box
+
+    def _update_init_button_text(self, initialized: bool) -> None:
+        """Reflect the active inference mode on the Initialize button.
+
+        The button reads e.g. ``Initialize (local)`` before a session exists and
+        ``Initialized (local)`` once one is live, swapping ``local``/``remote`` with
+        the current mode. Called from _lock_session / _unlock_session (which run on
+        construction, on every reset, and on mode switch), so the label always
+        tracks the real state without a dedicated handler.
+        """
+        mode = "remote" if self._remote_mode else "local"
+        label = "Initialized" if initialized else "Initialize"
+        self.init_button.setText(f"{label} ({mode})")
+        self.init_button.setToolTip(
+            "Uninitialize: tear down the current session (your objects are kept)"
+            if initialized
+            else "Initialize the Model and Image Pair"
+        )
 
     def _update_license_display(self, license_str: Optional[str]) -> None:
         """Show the loaded model's license below the Initialize button.
@@ -569,6 +620,29 @@ class BaseGUI(QWidget):
             return
         label.setText(f"Model license: {license_str.strip()}")
         label.setStyleSheet("")
+
+    def _update_device_warning(self) -> None:
+        """Show or hide the persistent CPU-fallback warning below Initialize.
+
+        Visible only while a local session that fell back to the CPU is live (no
+        usable CUDA GPU). Hidden for remote and GPU sessions, and whenever nothing is
+        initialized. CPU inference is very slow, so -- unlike the transient
+        notification -- this stays put until the next (successful) Initialize.
+        """
+        show = self._session_locked and not self._remote_mode and self._local_running_on_cpu
+        if show:
+            url = (
+                "https://github.com/MIC-DKFZ/napari-nninteractive"
+                "#step-3--optional-enable-local-inference"
+            )
+            self.device_warning_label.setText(
+                "⚠ No GPU detected — nnInteractive is running on the CPU, which is very "
+                "slow. Likely either no compatible GPU is present, or the installed "
+                "PyTorch build does not match your GPU. See the "
+                f'<a href="{url}">installation instructions</a> for installing a CUDA '
+                "build of PyTorch."
+            )
+        self.device_warning_label.setVisible(show)
 
     def _init_init_buttons(self):
         """Initializes the control buttons (Initialize and Reset)."""
@@ -645,13 +719,6 @@ class BaseGUI(QWidget):
         setup_icon(self.interaction_button.buttons[2], "paint", theme=self._viewer.theme)
         setup_icon(self.interaction_button.buttons[3], "polygon_lasso", theme=self._viewer.theme)
 
-        self.propagate_ckbx = setup_checkbox(
-            _layout,
-            "Auto-zoom",
-            True,
-            function=self.on_propagate_ckbx,
-        )
-
         for i, shortcut in enumerate(["P", "B", "S", "L"]):
             button = self.interaction_button.buttons[i]
             key = QShortcut(QKeySequence(shortcut), button)
@@ -663,42 +730,58 @@ class BaseGUI(QWidget):
         _group_box.setLayout(_layout)
         return _group_box
 
-    def _init_run_button(self) -> QGroupBox:
-        """Initializes the run button and auto-run checkbox"""
-        _group_box, _layout = setup_vcollapsiblegroupbox(text="Manual Control:", collapsed=True)
+    def _init_inference_options(self) -> QGroupBox:
+        """Inference-time options for the Settings tab (currently just Auto-zoom)."""
+        _group_box, _layout = setup_vgroupbox(text="Inference:")
 
-        h_layout = QHBoxLayout()
-        _layout.addLayout(h_layout)
-
-        self.add_button = setup_iconbutton(
-            h_layout,
-            "Add Interaction",
-            "add",
-            self._viewer.theme,
-            self.add_interaction,
-            tooltips="add the current interaction",
-        )
-        self.run_button = setup_iconbutton(
-            h_layout,
-            "Run",
-            "right_arrow",
-            self._viewer.theme,
-            self.on_run,
-            tooltips="Run the predict step",
-        )
-
-        self.run_ckbx = setup_checkbox(
+        self.propagate_ckbx = setup_checkbox(
             _layout,
-            "Auto Run Prediction",
+            "Auto-zoom",
             True,
-            tooltips="Run automatically after each interaction",
+            function=self.on_propagate_ckbx,
+            tooltips="Automatically zoom in and refine after each interaction. "
+            "Disabled automatically when running on CPU.",
         )
 
-        self.add_ckbx = setup_checkbox(
+        _group_box.setLayout(_layout)
+        return _group_box
+
+    def _init_label_aggregation(self) -> QGroupBox:
+        """Label-aggregation mode selector for the Settings tab.
+
+        Decides how a finished object is stored when you move to the next one (see
+        ``LayerControls._store_current_object``): as its own binary layer, or merged
+        into a single shared instance map (keeping or overwriting existing labels on
+        overlap). The mode is read at commit time, so it can be changed mid-session.
+        """
+        _group_box, _layout = setup_vgroupbox(text="Label Aggregation:")
+
+        _options = [self.AGG_BINARY, self.AGG_KEEP, self.AGG_OVERWRITE]
+        _tooltips = [
+            "Store each object as its own binary label layer (one layer per object).",
+            "Merge all objects into a single instance map. Where a new object overlaps an "
+            "existing one, the existing labels are kept and the new object fills only the "
+            "still-empty voxels.",
+            "Merge all objects into a single instance map. Where a new object overlaps an "
+            "existing one, the new object overwrites the existing labels.",
+        ]
+        self.label_aggregation_combo = setup_combobox(
             _layout,
-            "Auto Add Interaction",
-            True,
-            tooltips="Add interaction automatically to session",
+            options=_options,
+            tooltips="How finished objects are stored when you move on to the next object.",
+        )
+        # Per-item hover tooltips so each mode explains itself in the dropdown.
+        for _i, _tip in enumerate(_tooltips):
+            self.label_aggregation_combo.setItemData(_i, _tip, Qt.ToolTipRole)
+
+        # Persist the chosen mode across sessions, like the other settings. Restore the
+        # saved value before wiring the save handler so the restore itself doesn't re-save.
+        saved_mode = self._settings.value("label_aggregation", self.AGG_BINARY, type=str)
+        _mode_idx = self.label_aggregation_combo.findText(saved_mode)
+        if _mode_idx >= 0:
+            self.label_aggregation_combo.setCurrentIndex(_mode_idx)
+        self.label_aggregation_combo.currentTextChanged.connect(
+            lambda t: self._settings.setValue("label_aggregation", t)
         )
 
         _group_box.setLayout(_layout)
@@ -715,6 +798,17 @@ class BaseGUI(QWidget):
         return _group_box
 
     # Event Handlers
+    def on_init_button(self, *args, **kwargs) -> None:
+        """Toggle handler for the Initialize button: initialize when idle,
+        uninitialize (tear down the live session) when one is already initialized."""
+        if self._session_locked:
+            self.on_uninit()
+        else:
+            self.on_init()
+
+    def on_uninit(self, *args, **kwargs) -> None:
+        """Placeholder for tearing down the live session (subclasses override)."""
+
     def on_init(self, *args, **kwargs) -> None:
         """Initializes the session configuration based on the selected model and image."""
 

@@ -132,12 +132,6 @@ class nnInteractiveWidget(LayerControls):
             self._release_session()
         return super().eventFilter(obj, event)
 
-    def _unlock_session(self):
-        """Same as BaseGUI, but keep Initialize disabled until Connect succeeds in remote mode."""
-        super()._unlock_session()
-        if self._remote_mode and not self._remote_connected:
-            self.init_button.setEnabled(False)
-
     def _close(self):
         """Ctrl+Q handler: release the lease before quit() raises SystemExit."""
         self._release_session()
@@ -153,14 +147,23 @@ class nnInteractiveWidget(LayerControls):
         """
         Initialize the inference session and setup layers for interaction.
 
-        In remote mode the session must already be claimed via Connect; this
-        method uploads the image and target buffer on a background worker (so the
-        app does not freeze and a progress popup can be shown) and finishes setup
-        in _on_upload_done. In local mode the session is constructed here from the
-        configured checkpoint and the image is set synchronously.
+        In remote mode the session is claimed automatically if not already
+        connected (the Connect button is optional and only tests connectivity);
+        this method uploads the image and target buffer on a background worker (so
+        the app does not freeze and a progress popup can be shown) and finishes
+        setup in _on_upload_done. In local mode the session is constructed here
+        from the configured checkpoint and the image is set synchronously.
         """
         if self._remote_mode and not self._remote_connected:
-            show_warning("Remote mode: please Connect to a server first.")
+            # Not connected yet: connect silently, then run Initialize once the
+            # session is claimed. The user never has to click Connect first. Bail
+            # out early if no image is selected, so we don't claim a session only
+            # for the subsequent init to fail. Connection failures are surfaced by
+            # the claim continuation (_on_claim_returned).
+            if self.image_selection.currentText() == "":
+                show_warning("No image layer selected.")
+                return
+            self._start_claim(on_connected=lambda: self.on_init(*args, **kwargs))
             return
 
         super().on_init(*args, **kwargs)
@@ -198,6 +201,10 @@ class nnInteractiveWidget(LayerControls):
             if (self._resuming and np.any(self._data_result))
             else None
         )
+        if resume_seg is not None:
+            # The resumed object spans the whole re-seeded segmentation, which no change
+            # bbox covers, so it can't be localized -> merge this object globally.
+            self._object_bbox_reliable = False
 
         if self._remote_mode:
             # Compress + upload the image off the GUI thread, behind a modal popup
@@ -307,6 +314,17 @@ class nnInteractiveWidget(LayerControls):
         # Enter on an unchanged path keeps the session instead of resetting it.
         self._active_checkpoint_text = self.model_selection_local.text()
 
+        # Apply the current auto-zoom selection to the freshly initialized session.
+        # The checkbox is always editable, so the user may have toggled it since the
+        # session was built (local bakes it in at construction, remote at claim);
+        # re-applying here makes Initialize authoritative for both modes.
+        if self.session is not None:
+            try:
+                self.session.set_do_autozoom(self.propagate_ckbx.isChecked())
+            except _SESSION_LOST_ERRORS:
+                self._handle_session_expired()
+                return
+
         if self._viewer.dims.not_displayed != ():
             self._scribble_brush_size = self.session.preferred_scribble_thickness[
                 self._viewer.dims.not_displayed[0]
@@ -326,6 +344,10 @@ class nnInteractiveWidget(LayerControls):
         # shortcut (P/B/S/L).
         if self.interaction_button.index is not None:
             self.on_interaction_selected()
+
+        # Surface a persistent CPU-fallback warning if this local session ended up on
+        # the CPU (the transient notification is easy to miss and CPU inference is slow).
+        self._update_device_warning()
 
     def _construct_local_session(self) -> None:
         """Construct the local inference session from self.checkpoint_path."""
@@ -354,11 +376,15 @@ class nnInteractiveWidget(LayerControls):
         # CPU Fallback if no Cuda is available
         if torch.cuda.is_available():
             device = torch.device("cuda:0")
+            self._local_running_on_cpu = False
         else:
             show_warning(
                 "Cuda is not available. Using CPU instead. This will result in longer runtimes and additionally auto-zoom will be disabled for runtime reasons"
             )
             device = torch.device("cpu")
+            # Drives the persistent red warning shown below Initialize (the transient
+            # notification above is easy to miss and CPU inference is very slow).
+            self._local_running_on_cpu = True
             self.propagate_ckbx.setChecked(False)
 
         self.session = inference_class(
@@ -429,7 +455,12 @@ class nnInteractiveWidget(LayerControls):
         return session, None
 
     def on_connect_toggle(self) -> None:
-        """Claim a remote session, or release the held one if already connected."""
+        """Connect or disconnect the remote session.
+
+        Connecting here is optional: it only tests connectivity and readies the
+        session ahead of time. Initialize connects on its own when needed, so the
+        user never has to click this first.
+        """
         if self._remote_connected:
             self._disconnect_remote()
             # Treat as if the model was reset: drop layers, regrey interactions.
@@ -437,9 +468,21 @@ class nnInteractiveWidget(LayerControls):
             self._unlock_session()
             return
 
+        self._start_claim()
+
+    def _start_claim(self, on_connected=None) -> None:
+        """Claim a remote session off the GUI thread, showing a connecting state.
+
+        ``on_connected``, if given, is called on the GUI thread once the claim
+        succeeds -- Initialize uses it to continue automatically after a silent
+        connect. On failure the reason is shown in the status label, and also as a
+        warning popup when a continuation was waiting on the connection.
+        """
         server_url = self.server_url_edit.text().strip()
         if not server_url:
             self.remote_status_label.setText("enter a server URL")
+            if on_connected is not None:
+                show_warning("Remote mode: enter a server URL first.")
             return
 
         api_key = self.api_key_edit.text() or None
@@ -458,7 +501,9 @@ class nnInteractiveWidget(LayerControls):
             api_key,
             do_autozoom,
             _connect={
-                "returned": lambda result: self._on_claim_returned(result, server_url),
+                "returned": lambda result: self._on_claim_returned(
+                    result, server_url, on_connected
+                ),
                 "errored": self._on_claim_errored,
             },
             _progress={"desc": "Connecting to server"},
@@ -473,10 +518,11 @@ class nnInteractiveWidget(LayerControls):
             self.mode_switch,
             self.server_url_edit,
             self.api_key_edit,
+            self.init_button,
         ):
             widget.setEnabled(enabled)
 
-    def _on_claim_returned(self, result, server_url: str) -> None:
+    def _on_claim_returned(self, result, server_url: str, on_connected=None) -> None:
         """GUI-thread continuation after the claim worker finishes."""
         session, error = result
         self._set_connecting(False)
@@ -484,6 +530,10 @@ class nnInteractiveWidget(LayerControls):
             self.connect_btn.setText("Connect")
             self.remote_status_label.setText(error or "connection failed")
             self._viewer.status = "Connection failed"
+            # A silent connect triggered by Initialize failed: surface it as a
+            # popup, not just a status-label change the user may not be looking at.
+            if on_connected is not None:
+                show_warning(f"Could not connect to server: {error or 'connection failed'}")
             return
 
         self.session = session
@@ -491,8 +541,11 @@ class nnInteractiveWidget(LayerControls):
         self.connect_btn.setText("✓ Connected")
         self.remote_status_label.setText(f"connected ({server_url})")
         self._viewer.status = "Connected"
-        # Connecting unlocks the Initialize button (via the override).
         self._unlock_session()
+
+        # If Initialize triggered this connect, continue into init now.
+        if on_connected is not None:
+            on_connected()
 
     def _on_claim_errored(self, exc: BaseException) -> None:
         """Unexpected error not already mapped inside _claim_remote_session."""
@@ -623,6 +676,22 @@ class nnInteractiveWidget(LayerControls):
         self._clear_layers()
         self._unlock_session()
         return True
+
+    def on_uninit(self, *args, **kwargs) -> None:
+        """Initialize pressed while a session is live: tear it down and return to
+        the pre-Initialize state, keeping the in-progress object as a finished one.
+
+        Local sessions are simply dropped; remote sessions also release the server
+        lease (Initialize reconnects silently next time). Stored objects and any
+        previously finished objects are left untouched in the viewer.
+        """
+        self._store_in_progress_segmentation()
+        if self._remote_mode:
+            self._disconnect_remote()
+        else:
+            self.session = None
+        self._clear_layers()
+        self._unlock_session()
 
     def on_local_settings_changed(self, *args, **kwargs):
         """A baked-in local option (torch.compile / interaction storage) changed.
@@ -766,25 +835,37 @@ class nnInteractiveWidget(LayerControls):
 
             if data is not None:
                 _prompt = self.prompt_button.index == 0
-                _auto_run = self.run_ckbx.isChecked()
+                # Manual Control was removed, so prediction always runs automatically
+                # after an interaction is added.
+                _auto_run = True
 
+                # add_*_interaction returns the backend's changed-region bbox (clipped,
+                # directly sliceable), or None when it cannot be localized. We accumulate it
+                # into the object's extent so it can later be merged into the instance map
+                # locally instead of scanning the whole volume.
+                changed_bbox = None
                 try:
                     if _index == 0:
                         self._viewer.layers[self.point_layer_name].refresh(force=True)
-                        self.session.add_point_interaction(data, _prompt, _auto_run)
+                        changed_bbox = self.session.add_point_interaction(data, _prompt, _auto_run)
                     elif _index == 1:
                         bbox = self._bbox_to_half_open_intervals(data)
-                        self.session.add_bbox_interaction(bbox, _prompt, _auto_run)
+                        changed_bbox = self.session.add_bbox_interaction(bbox, _prompt, _auto_run)
                     elif _index == 2:
                         crop_3d, bbox = data
-                        self.session.add_scribble_interaction(crop_3d, _prompt, _auto_run, interaction_bbox=bbox)
+                        changed_bbox = self.session.add_scribble_interaction(
+                            crop_3d, _prompt, _auto_run, interaction_bbox=bbox
+                        )
                     elif _index == 3:
                         crop_3d, bbox = data
-                        self.session.add_lasso_interaction(crop_3d, _prompt, _auto_run, interaction_bbox=bbox)
+                        changed_bbox = self.session.add_lasso_interaction(
+                            crop_3d, _prompt, _auto_run, interaction_bbox=bbox
+                        )
                 except _SESSION_LOST_ERRORS:
                     self._handle_session_expired()
                     return
 
+                self._accumulate_object_bbox(changed_bbox)
                 # Record which layer holds this interaction's marker so on_undo can remove it.
                 self._interaction_history.append(_layer_name)
                 self._viewer.layers[self.label_layer_name].refresh()
@@ -844,6 +925,9 @@ class nnInteractiveWidget(LayerControls):
                 except _SESSION_LOST_ERRORS:
                     self._handle_session_expired()
                     return
+                # The loaded seg is written across an arbitrary region the returned paste
+                # bbox does not cover, so this object can't be localized -> merge globally.
+                self._object_bbox_reliable = False
                 # Undoable via the backend; there is no interaction-layer marker to remove.
                 self._interaction_history.append(None)
                 self._viewer.layers[self.label_layer_name].refresh()
