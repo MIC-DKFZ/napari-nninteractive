@@ -73,9 +73,7 @@ def _local_inference_available() -> bool:
     "not available".
     """
     try:
-        return (
-            importlib.util.find_spec("nnInteractive.inference.inference_session") is not None
-        )
+        return importlib.util.find_spec("nnInteractive.inference.inference_session") is not None
     except ModuleNotFoundError:
         return False
     except Exception:  # noqa: BLE001 - never block the GUI on a capability probe
@@ -312,9 +310,7 @@ class BaseGUI(QWidget):
         # why local is unavailable and how to enable it.
         if not self._local_available:
             self.mode_switch.buttons[0].setToolTip(_REMOTE_ONLY_HINT)
-            self.mode_switch.buttons[1].setToolTip(
-                "Run inference on a remote nninteractive-server"
-            )
+            self.mode_switch.buttons[1].setToolTip("Run inference on a remote nninteractive-server")
             self._grey_local_switch_button()
 
         # --- Local container --- #
@@ -348,9 +344,7 @@ class BaseGUI(QWidget):
                 if default_id in self._model_ids:
                     default_index = self._model_ids.index(default_id)
             except Exception as exc:  # noqa: BLE001 - never block the GUI on model discovery
-                warnings.warn(
-                    f"Could not load the nnInteractive model list: {exc}", stacklevel=2
-                )
+                warnings.warn(f"Could not load the nnInteractive model list: {exc}", stacklevel=2)
 
         self.model_selection = setup_combobox(
             _local_layout, options=model_display_names, function=self.on_model_selected
@@ -471,9 +465,7 @@ class BaseGUI(QWidget):
         self.model_selection_local.textChanged.connect(
             lambda t: self._settings.setValue("local_checkpoint", t)
         )
-        self.server_url_edit.textChanged.connect(
-            lambda t: self._settings.setValue("server_url", t)
-        )
+        self.server_url_edit.textChanged.connect(lambda t: self._settings.setValue("server_url", t))
 
         # Persist the advanced option values between sessions.
         self.use_torch_compile_ckbx.toggled.connect(

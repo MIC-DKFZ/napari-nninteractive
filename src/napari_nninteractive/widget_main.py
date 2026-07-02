@@ -31,6 +31,7 @@ try:
         SessionExpiredError,
     )
 except ImportError:  # remote client extra not installed
+
     class SessionExpiredError(Exception):  # type: ignore[no-redef]
         pass
 
@@ -167,6 +168,10 @@ class nnInteractiveWidget(LayerControls):
             return
 
         super().on_init(*args, **kwargs)
+        if self.session_cfg is None:
+            # Initialization was cancelled (e.g. the resolution-level dialog was
+            # dismissed); nothing was configured, so stop here.
+            return
 
         if self.session is None:
             self._construct_local_session()
@@ -186,11 +191,14 @@ class nnInteractiveWidget(LayerControls):
             }
         )
 
-        _data = self._viewer.layers[self.session_cfg["name"]].data
-        _data = _data[np.newaxis, ...]
-
-        if self.source_cfg["ndim"] == 2:
-            _data = _data[np.newaxis, ...]
+        _layer = self._viewer.layers[self.session_cfg["name"]]
+        _data = _layer.data
+        if _layer.multiscale:
+            _data = _data[self.session_cfg.get("level", 0)]
+        # Do NOT materialize here. _data may be a lazy (dask/zarr-backed) OME-Zarr
+        # level; densifying it is deferred to _prepare_image_for_session so a large
+        # level is loaded on the upload worker thread (remote) or only at set_image
+        # time (local) -- never eagerly on the GUI thread.
 
         spacing = self.session_cfg["spacing"]
         # Resuming after a reconnect: seed the fresh session with the segmentation
@@ -228,6 +236,7 @@ class nnInteractiveWidget(LayerControls):
 
         # Local mode: set the image synchronously (no network round trip).
         try:
+            _data = self._prepare_image_for_session(_data)
             self.session.set_image(_data, {"spacing": spacing})
             self.session.set_target_buffer(self._data_result)
             if resume_seg is not None:
@@ -247,6 +256,7 @@ class nnInteractiveWidget(LayerControls):
         _on_upload_errored.
         """
         try:
+            data = self._prepare_image_for_session(data)
             self.session.set_image(data, {"spacing": spacing})
             self.session.set_target_buffer(target_buffer)
             if resume_seg is not None:
@@ -254,6 +264,21 @@ class nnInteractiveWidget(LayerControls):
         except _SESSION_LOST_ERRORS:
             return "session_lost"
         return "ok"
+
+    def _prepare_image_for_session(self, data):
+        """Densify the selected image level into the (1, D, H, W) array the backend
+        expects, promoting 2D data with an extra leading axis.
+
+        Kept out of on_init so a large (possibly lazy zarr/dask-backed) OME-Zarr
+        level is materialized on the upload worker thread (remote) or only at
+        set_image time (local) rather than eagerly on the GUI thread. Safe to call
+        off the GUI thread: it only reads self.source_cfg and touches no Qt widgets.
+        """
+        data = np.asarray(data)
+        data = data[np.newaxis, ...]
+        if self.source_cfg["ndim"] == 2:
+            data = data[np.newaxis, ...]
+        return data
 
     def _on_upload_done(self, result: str) -> None:
         """GUI-thread continuation after the image-upload worker finishes."""
@@ -413,12 +438,13 @@ class nnInteractiveWidget(LayerControls):
             import httpx
             from nnInteractive.inference.remote import nnInteractiveRemoteInferenceSession
         except ImportError:
-            return None, "Remote mode requires the client extra: pip install 'nnInteractive[client]'"
+            return (
+                None,
+                "Remote mode requires the client extra: pip install 'nnInteractive[client]'",
+            )
 
         try:
-            session = nnInteractiveRemoteInferenceSession(
-                server_url=server_url, api_key=api_key
-            )
+            session = nnInteractiveRemoteInferenceSession(server_url=server_url, api_key=api_key)
         except ServerAtCapacityError:
             return None, "Server full; try again later."
         # Connectivity problems must be handled BEFORE the session-lost case below:
@@ -864,7 +890,9 @@ class nnInteractiveWidget(LayerControls):
         if self.session is None:
             return
         if not getattr(self.session, "supports_undo", False):
-            show_warning("Undo is not supported by this server. Please update nninteractive-server.")
+            show_warning(
+                "Undo is not supported by this server. Please update nninteractive-server."
+            )
             return
         try:
             undone = self.session.undo()
