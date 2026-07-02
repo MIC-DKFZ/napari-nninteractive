@@ -748,10 +748,12 @@ class nnInteractiveWidget(LayerControls):
         # self.prompt_button._uncheck()
         self.prompt_button._on_button_pressed(0)
 
-    def on_next(self):
+    def on_next(self, *args, store_output=None, store_overlap=None, store_class_id=None):
         """Reset the Interactions of current session"""
         _ind = self.interaction_button.index
-        super().on_next()
+        super().on_next(
+            store_output=store_output, store_overlap=store_overlap, store_class_id=store_class_id
+        )
         if self.session is not None:
             try:
                 self.session.reset_interactions()
@@ -759,28 +761,11 @@ class nnInteractiveWidget(LayerControls):
                 self._handle_session_expired()
                 return
 
-        # if (
-        #     self.use_init_ckbx.isChecked()
-        #     and self.label_for_init.currentText() in self._viewer.layers
-        # ):
-        #     self.init_with_mask()
-
         self._viewer.layers[self.label_layer_name].refresh()
 
         self.interaction_button._check(_ind)
         self.on_interaction_selected()
         self.prompt_button._check(0)
-
-    def on_run(self):
-        """Manual Run button: predict against the (possibly remote) session and
-        refresh the label layer, treating a lost connection like session expiry."""
-        if self.session is not None:
-            try:
-                self.session._predict()
-            except _SESSION_LOST_ERRORS:
-                self._handle_session_expired()
-                return
-            self._viewer.layers[self.label_layer_name].refresh()
 
     def on_propagate_ckbx(self, *args, **kwargs):
         if self.session is not None:
@@ -831,7 +816,6 @@ class nnInteractiveWidget(LayerControls):
             data = self._viewer.layers[_layer_name].get_last()
 
             self._viewer.layers[_layer_name].run()
-            # self.inference(_data, _index)
 
             if data is not None:
                 _prompt = self.prompt_button.index == 0

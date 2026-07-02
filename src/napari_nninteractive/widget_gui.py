@@ -91,11 +91,13 @@ class BaseGUI(QWidget):
         parent (Optional[QWidget], optional): The parent widget. Defaults to None.
     """
 
-    # Label aggregation modes (Settings > Label Aggregation). The order here is the
-    # dropdown order; LayerControls._store_current_object switches on these exact strings.
-    AGG_BINARY = "Separate layers"
-    AGG_KEEP = "Single map (keep existing)"
-    AGG_OVERWRITE = "Single map (overwrite)"
+    # Label aggregation (Interact > Label Aggregation). Output mode + overlap rule are read
+    # at commit time by LayerControls._store_current_object, which switches on these strings.
+    OUT_SEPARATE = "Separate layers"
+    OUT_INSTANCE = "Instance map"
+    OUT_SEMANTIC = "Semantic map (fixed ID)"
+    OVERLAP_KEEP = "keep existing"
+    OVERLAP_OVERWRITE = "overwrite"
 
     def __init__(self, viewer: Viewer, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -139,6 +141,7 @@ class BaseGUI(QWidget):
         _interact_layout.addWidget(self._init_init_buttons())  # Initialize with Segmentation
         _interact_layout.addWidget(self._init_prompt_selection())  # Prompt Selection
         _interact_layout.addWidget(self._init_interaction_selection())  # Interaction Tools
+        _interact_layout.addWidget(self._init_label_aggregation())  # Label Aggregation
         _interact_layout.addWidget(self._init_export_button())  # Export
         _ = setup_acknowledgements(_interact_layout, width=self._width)  # Acknowledgements
 
@@ -148,7 +151,6 @@ class BaseGUI(QWidget):
         _, _settings_layout = setup_vscrollarea(_settings_outer)
         _settings_layout.addWidget(self._init_model_selection())  # Model Selection
         _settings_layout.addWidget(self._init_inference_options())  # Auto-zoom
-        _settings_layout.addWidget(self._init_label_aggregation())  # Label Aggregation
 
         _tabs = setup_tabwidget(
             _main_layout,
@@ -170,6 +172,15 @@ class BaseGUI(QWidget):
         )
         self.version_status_label.setVisible(False)
         _main_layout.addWidget(self.version_status_label)
+
+        # Keep the Interact-tab hotkeys (P/B/S/L, T, R, M, Ctrl+Z) working regardless of
+        # which tab is shown. They are QShortcuts parented to Interact-tab widgets and
+        # default to Qt.WindowShortcut, which only fires while the parent widget is visible
+        # -- so switching to the Settings tab (hiding those widgets) would otherwise disable
+        # them. Promote every shortcut to ApplicationShortcut; focused text fields still
+        # consume the keys they accept, so typing in a line edit / spin box is unaffected.
+        for _shortcut in self.findChildren(QShortcut):
+            _shortcut.setContext(Qt.ApplicationShortcut)
 
         self._unlock_session()
         self._viewer.bind_key("Ctrl+Q", self._close, overwrite=True)
@@ -240,7 +251,6 @@ class BaseGUI(QWidget):
         self.label_for_init.setEnabled(False)
         self.class_for_init.setEnabled(False)
         self.auto_refine.setEnabled(False)
-        # self.empty_mask_btn.setEnabled(False)
         self.load_mask_btn.setEnabled(False)
 
     def _set_interaction_button_support(self, supported: dict[int, bool]) -> None:
@@ -275,7 +285,6 @@ class BaseGUI(QWidget):
         self.label_for_init.setEnabled(True)
         self.class_for_init.setEnabled(True)
         self.auto_refine.setEnabled(True)
-        # self.empty_mask_btn.setEnabled(True)
         self.load_mask_btn.setEnabled(True)
 
     def _clear_layers(self):
@@ -747,45 +756,94 @@ class BaseGUI(QWidget):
         return _group_box
 
     def _init_label_aggregation(self) -> QGroupBox:
-        """Label-aggregation mode selector for the Settings tab.
+        """Label-aggregation controls for the Interact tab.
 
-        Decides how a finished object is stored when you move to the next one (see
-        ``LayerControls._store_current_object``): as its own binary layer, or merged
-        into a single shared instance map (keeping or overwriting existing labels on
-        overlap). The mode is read at commit time, so it can be changed mid-session.
+        Decide how a finished object is stored when you move to the next one (read at
+        commit time in ``LayerControls._store_current_object``, so all of these can be
+        changed mid-session):
+
+        * **Output** — a separate layer per object, one shared **instance map** (each
+          object gets its own label id), or one shared **semantic map** (every object is
+          written with the fixed Class ID, so several instances share a semantic class).
+        * **On overlap** (map modes only) — keep earlier objects, or let the new one
+          overwrite them where they overlap.
+        * **Class ID** (semantic mode only) — the label value written to the semantic map;
+          change it between classes to assign instances to different semantic classes.
         """
         _group_box, _layout = setup_vgroupbox(text="Label Aggregation:")
 
-        _options = [self.AGG_BINARY, self.AGG_KEEP, self.AGG_OVERWRITE]
-        _tooltips = [
+        # --- Output mode --- #
+        _out_layout = QHBoxLayout()
+        _layout.addLayout(_out_layout)
+        _out_label = setup_label(_out_layout, "Output:")
+        _out_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.aggregation_output_combo = setup_combobox(
+            _out_layout,
+            options=[self.OUT_SEPARATE, self.OUT_INSTANCE, self.OUT_SEMANTIC],
+        )
+        _out_tips = [
             "Store each object as its own binary label layer (one layer per object).",
-            "Merge all objects into a single instance map. Where a new object overlaps an "
-            "existing one, the existing labels are kept and the new object fills only the "
-            "still-empty voxels.",
-            "Merge all objects into a single instance map. Where a new object overlaps an "
-            "existing one, the new object overwrites the existing labels.",
+            "Merge all objects into a single instance map, each object written as its own "
+            "label id.",
+            "Merge all objects into a single semantic map, each object written with the "
+            "fixed Class ID below, so several instances share one semantic class.",
         ]
-        self.label_aggregation_combo = setup_combobox(
-            _layout,
-            options=_options,
-            tooltips="How finished objects are stored when you move on to the next object.",
-        )
-        # Per-item hover tooltips so each mode explains itself in the dropdown.
-        for _i, _tip in enumerate(_tooltips):
-            self.label_aggregation_combo.setItemData(_i, _tip, Qt.ToolTipRole)
+        for _i, _tip in enumerate(_out_tips):
+            self.aggregation_output_combo.setItemData(_i, _tip, Qt.ToolTipRole)
 
-        # Persist the chosen mode across sessions, like the other settings. Restore the
-        # saved value before wiring the save handler so the restore itself doesn't re-save.
-        saved_mode = self._settings.value("label_aggregation", self.AGG_BINARY, type=str)
-        _mode_idx = self.label_aggregation_combo.findText(saved_mode)
-        if _mode_idx >= 0:
-            self.label_aggregation_combo.setCurrentIndex(_mode_idx)
-        self.label_aggregation_combo.currentTextChanged.connect(
-            lambda t: self._settings.setValue("label_aggregation", t)
+        # --- Overlap rule (map modes only) --- #
+        _ovl_layout = QHBoxLayout()
+        _layout.addLayout(_ovl_layout)
+        self.aggregation_overlap_label = setup_label(_ovl_layout, "On overlap:")
+        self.aggregation_overlap_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.aggregation_overlap_combo = setup_combobox(
+            _ovl_layout,
+            options=[self.OVERLAP_KEEP, self.OVERLAP_OVERWRITE],
+            tooltips="keep existing: a new object only fills still-empty voxels, preserving "
+            "earlier objects. overwrite: the new object replaces existing labels where they overlap.",
         )
+
+        # --- Class ID (semantic mode only) --- #
+        _id_layout = QHBoxLayout()
+        _layout.addLayout(_id_layout)
+        self.aggregation_class_id_label = setup_label(_id_layout, "Class ID:")
+        self.aggregation_class_id_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.aggregation_class_id = setup_spinbox(_id_layout, maximum=999, default=1, stretch=1)
+        self.aggregation_class_id.setToolTip(
+            "Label value written to the semantic map; change it between classes to assign "
+            "instances to different semantic classes."
+        )
+        self.aggregation_class_id.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
+
+        # Aggregation state is intentionally NOT persisted: every session starts at the
+        # defaults (Separate layers / keep existing / Class ID 1). Set them explicitly -
+        # before wiring the handlers - so a future reordering of the options can't change the
+        # default, and so these initial sets don't fire the commit/enable logic.
+        self.aggregation_output_combo.setCurrentText(self.OUT_SEPARATE)
+        self.aggregation_overlap_combo.setCurrentText(self.OVERLAP_KEEP)
+        self.aggregation_class_id.setValue(1)
+
+        # Snapshot for the mid-object commit logic (see on_aggregation_changed).
+        self._prev_agg_settings = self._read_agg_settings()
+
+        self.aggregation_output_combo.currentTextChanged.connect(self.on_aggregation_output_changed)
+        # Any aggregation change commits the in-flight object and starts a fresh segment.
+        self.aggregation_output_combo.currentTextChanged.connect(self.on_aggregation_changed)
+        self.aggregation_overlap_combo.currentTextChanged.connect(self.on_aggregation_changed)
+        self.aggregation_class_id.valueChanged.connect(self.on_aggregation_changed)
+        # Set the initial enabled state of the dependent controls for the default mode.
+        self.on_aggregation_output_changed()
 
         _group_box.setLayout(_layout)
         return _group_box
+
+    def _read_agg_settings(self) -> tuple:
+        """Current (output, overlap, class_id) of the Label Aggregation controls."""
+        return (
+            self.aggregation_output_combo.currentText(),
+            self.aggregation_overlap_combo.currentText(),
+            int(self.aggregation_class_id.value()),
+        )
 
     def _init_export_button(self) -> QGroupBox:
         """Initializes the export button"""
@@ -848,6 +906,20 @@ class BaseGUI(QWidget):
         """Resets the interactions."""
         print("_reset_interactions")
 
+    def on_aggregation_output_changed(self, *args, **kwargs) -> None:
+        """Enable On-overlap only for the map modes and Class ID only for the semantic mode."""
+        output = self.aggregation_output_combo.currentText()
+        is_map = output in (self.OUT_INSTANCE, self.OUT_SEMANTIC)
+        is_semantic = output == self.OUT_SEMANTIC
+        self.aggregation_overlap_combo.setEnabled(is_map)
+        self.aggregation_overlap_label.setEnabled(is_map)
+        self.aggregation_class_id.setEnabled(is_semantic)
+        self.aggregation_class_id_label.setEnabled(is_semantic)
+
+    def on_aggregation_changed(self, *args, **kwargs) -> None:
+        """Placeholder: LayerControls commits the in-flight object when a setting changes."""
+        self._prev_agg_settings = self._read_agg_settings()
+
     def on_prompt_selected(self, *args, **kwargs) -> None:
         """Placeholder method for when a prompt type is selected"""
         print("on_prompt_selected", self.prompt_button.index, self.prompt_button.value)
@@ -874,17 +946,10 @@ class BaseGUI(QWidget):
         """Placeholder method for when the active interaction tool is deselected."""
         print("on_interaction_deselected")
 
-    def on_run(self, *args, **kwargs) -> None:
-        """Placeholder method for run operation"""
-        print("on_run")
-
     def on_propagate_ckbx(self, *args, **kwargs):
         print("on_propagate_ckbx", *args, **kwargs)
 
     def on_load_mask(self):
-        pass
-
-    def add_mask_init_layer(self):
         pass
 
     def _export(self) -> None:

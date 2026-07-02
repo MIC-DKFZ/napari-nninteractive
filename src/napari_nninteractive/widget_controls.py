@@ -185,40 +185,6 @@ class LayerControls(BaseGUI):
 
         self._viewer.add_layer(label_layer)
 
-    def add_mask_init_layer(self) -> None:
-        """
-        Check if a layer with the layer_name already exists. If yes rename this by adding an index
-        and afterward create the layer
-        :return:
-        :rtype:
-        """
-
-        _layer_res = Labels(
-            np.zeros_like(self._data_result),
-            name=self.mask_init_layer_name,
-            opacity=0.3,
-            affine=self.session_cfg["affine"],
-            scale=self.session_cfg["scale"],
-            translate=self.session_cfg["translate"],
-            rotate=self.session_cfg["rotate"],
-            shear=self.session_cfg["shear"],
-            metadata=self.session_cfg["metadata"],
-        )
-        _layer_res._source = self.session_cfg["source"]
-
-        self._viewer.add_layer(_layer_res)
-
-    def init_with_mask(self):
-        _layer_data = self._viewer.layers[self.label_for_init.currentText()].data
-
-        assert (
-            _layer_data.shape == self.session_cfg["shape"]
-        )  # Labels and Image should have same shape
-
-        self._data_result = (_layer_data == self.class_for_init.value()).astype(np.uint8)
-        self.session.set_target_buffer(self._data_result)
-        self._viewer.layers[self.label_layer_name].data = self._data_result
-
     # Event Handlers
     def on_init(self, *args, **kwargs) -> None:
         """
@@ -450,73 +416,90 @@ class LayerControls(BaseGUI):
                 for cur, new in zip(self._current_object_bbox, bbox)
             ]
 
-    def _store_current_object(self) -> None:
+    def _store_current_object(self, output=None, overlap=None, class_id=None) -> None:
         """Promote the in-progress label layer to a finished object.
 
-        The Settings > Label Aggregation mode decides how (read here at commit time,
-        so it can be changed between objects):
+        The Label Aggregation controls (Interact tab) decide how:
 
         * ``Separate layers``: copy it to its own ``object N - <name>`` binary layer.
-        * ``Single map (keep existing)``: merge it into the shared ``instance map -
-          <name>`` layer at the object's index, writing only where the map is still
-          background so earlier objects are preserved.
-        * ``Single map (overwrite)``: merge it in the same way, but overwrite existing
-          labels wherever objects overlap.
+        * ``Instance map``: merge it into the shared ``instance map - <name>`` layer at
+          the object's own index (a distinct id per object).
+        * ``Semantic map (fixed ID)``: merge it into the shared ``semantic map - <name>``
+          layer at the fixed Class ID, so several instances share one semantic class.
 
-        Advances object_index so subsequent objects keep consistent numbering and
-        colours. Shared by ``on_next`` and by the reset / export paths that fold in
-        the in-progress object before it would otherwise be lost.
+        For both map modes the ``On overlap`` rule decides whether the new object keeps
+        earlier ones (fills only background voxels) or overwrites them. ``output`` /
+        ``overlap`` / ``class_id`` default to the current control values, but can be
+        passed explicitly so a mid-object settings change can commit the in-flight object
+        under the *previous* settings before adopting the new ones. Advances object_index
+        so subsequent objects keep consistent numbering and colours. Shared by ``on_next``
+        and the reset / export paths that fold in the in-progress object before it would
+        otherwise be lost.
         """
         label_layer = self._viewer.layers[self.label_layer_name]
-        object_value = self.object_index + 1
-        mode = self.label_aggregation_combo.currentText()
+        if output is None:
+            output = self.aggregation_output_combo.currentText()
+        if overlap is None:
+            overlap = self.aggregation_overlap_combo.currentText()
+        if class_id is None:
+            class_id = int(self.aggregation_class_id.value())
 
-        if mode == self.AGG_BINARY:
-            _name = f"object {object_value} - {self.session_cfg['name']}"
+        if output == self.OUT_SEPARATE:
+            _name = f"object {self.object_index + 1} - {self.session_cfg['name']}"
             self.add_label_layer(label_layer.data.copy(), _name)
             self._viewer.layers[_name].colormap = self.colormap[self.object_index]
+            self.object_index += 1
+            return
+
+        # Map modes: merge into a single shared layer. Instance map uses a distinct id per
+        # object; semantic map uses the fixed Class ID (so instances share a class).
+        if output == self.OUT_SEMANTIC:
+            _agg_name = f"semantic map - {self.session_cfg['name']}"
+            label_id = int(class_id)
         else:
-            # aggregate (keep) / aggregate (overwrite): merge into one instance map,
-            # each object written as its own integer value.
-            _inst_name = f"instance map - {self.session_cfg['name']}"
-            if _inst_name not in self._viewer.layers:
-                self.add_label_layer(np.zeros_like(label_layer.data), _inst_name)
-            inst_layer = self._viewer.layers[_inst_name]
+            _agg_name = f"instance map - {self.session_cfg['name']}"
+            label_id = self.object_index + 1
 
-            # Merge only the sub-volume this object occupies, when we could track its
-            # extent (union of the backend's changed-region bboxes). Slicing yields views,
-            # so writing through them updates the instance map in place. Falls back to a
-            # whole-volume merge when the extent is unknown (older backend, whole-buffer
-            # seed, etc.). Outside the object's bbox its mask is all-zero, so a local merge
-            # produces exactly the same result as a global one.
-            if self._object_bbox_reliable and self._current_object_bbox is not None:
-                slc = tuple(slice(int(lb), int(ub)) for lb, ub in self._current_object_bbox)
-            else:
-                slc = tuple(slice(None) for _ in range(label_layer.data.ndim))
+        if _agg_name not in self._viewer.layers:
+            self.add_label_layer(np.zeros_like(label_layer.data), _agg_name)
+        agg_layer = self._viewer.layers[_agg_name]
 
-            sub_obj = label_layer.data[slc]
-            sub_inst = inst_layer.data[slc]
-            object_mask = sub_obj == 1
-            if mode == self.AGG_KEEP:
-                # Preserve earlier objects: only paint still-background voxels.
-                object_mask = object_mask & (sub_inst == 0)
-            sub_inst[object_mask] = object_value
+        # Merge only the sub-volume this object occupies, when we could track its extent
+        # (union of the backend's changed-region bboxes). Slicing yields views, so writing
+        # through them updates the layer in place. Falls back to a whole-volume merge when
+        # the extent is unknown (older backend, whole-buffer seed). Outside the object's
+        # bbox its mask is all-zero, so a local merge equals a global one.
+        if self._object_bbox_reliable and self._current_object_bbox is not None:
+            slc = tuple(slice(int(lb), int(ub)) for lb, ub in self._current_object_bbox)
+        else:
+            slc = tuple(slice(None) for _ in range(label_layer.data.ndim))
 
-            # Colour each object in the instance map with the same per-object colour
-            # its working-layer preview used. The preview stores the object as value 1
-            # and colours it via self.colormap[object_index]; here the object is value
-            # object_index+1, so map value v back to self.colormap[v-1] to keep colours
-            # consistent across the commit. Rebuilt each time so newly added values (and
-            # any picked up on resume) are covered.
-            color_dict = {None: (0, 0, 0, 0), 0: (0, 0, 0, 0)}
-            for _v in range(1, object_value + 1):
-                color_dict[_v] = self.colormap[_v - 1][1]
-            inst_layer.colormap = DirectLabelColormap(color_dict=color_dict)
-            inst_layer.refresh()
+        sub_obj = label_layer.data[slc]
+        sub_agg = agg_layer.data[slc]
+        object_mask = sub_obj == 1
+        if overlap == self.OVERLAP_KEEP:
+            # Preserve earlier objects: only paint still-background voxels.
+            object_mask = object_mask & (sub_agg == 0)
+        sub_agg[object_mask] = label_id
+
+        # Give this label id the matching palette colour, preserving colours already
+        # assigned. Reading back the layer's DirectLabelColormap avoids a whole-volume
+        # scan of the existing ids. Instance ids reuse the working-layer preview colour;
+        # semantic classes get a stable per-class colour.
+        color_dict = (
+            dict(agg_layer.colormap.color_dict)
+            if isinstance(agg_layer.colormap, DirectLabelColormap)
+            else {}
+        )
+        color_dict[None] = (0, 0, 0, 0)
+        color_dict[0] = (0, 0, 0, 0)
+        color_dict[label_id] = self.colormap[label_id - 1][1]
+        agg_layer.colormap = DirectLabelColormap(color_dict=color_dict)
+        agg_layer.refresh()
 
         self.object_index += 1
 
-    def on_next(self) -> None:
+    def on_next(self, *args, store_output=None, store_overlap=None, store_class_id=None) -> None:
         """
         Prepares the next label layer for interactions in the viewer.
 
@@ -525,7 +508,10 @@ class LayerControls(BaseGUI):
         layers. A new label layer with an updated colormap is then added to the viewer.
         """
         # Store the current object and recolour the working layer for the next one.
-        self._store_current_object()
+        # store_* are keyword-only so the stray ``clicked`` bool from the Next Object
+        # button / M shortcut can't populate them; they let a mid-object settings change
+        # commit under the previous aggregation settings.
+        self._store_current_object(store_output, store_overlap, store_class_id)
         self._viewer.layers[self.label_layer_name].colormap = self.colormap[self.object_index]
         # The next object starts with a fresh (empty) tracked extent.
         self._reset_object_bbox()
@@ -533,6 +519,29 @@ class LayerControls(BaseGUI):
         self._clear_layers()
         self.prompt_button._uncheck()
         self.prompt_button._check(0)
+
+    def on_aggregation_changed(self, *args, **kwargs) -> None:
+        """Commit the in-flight object and start a fresh segment when any Label Aggregation
+        control (Output / On overlap / Class ID) changes mid-object.
+
+        The in-flight object is committed under the *previous* settings so it is filed the
+        way it was being built (e.g. an instance-map object does not suddenly land in the
+        semantic map, and a semantic object keeps the class it was drawn under). A no-op
+        when nothing is initialized or the working layer is still empty.
+        """
+        prev = self._prev_agg_settings
+        cur = self._read_agg_settings()
+        self._prev_agg_settings = cur
+        if prev is None or prev == cur:
+            return
+        if (
+            getattr(self, "session", None) is not None
+            and self.label_layer_name in self._viewer.layers
+            and np.any(self._viewer.layers[self.label_layer_name].data)
+        ):
+            self.on_next(
+                store_output=prev[0], store_overlap=prev[1], store_class_id=prev[2]
+            )
 
     def on_prompt_selected(self) -> None:
         """
@@ -594,11 +603,6 @@ class LayerControls(BaseGUI):
             warnings.simplefilter("ignore", FutureWarning)
             self._viewer.window._qt_viewer.setFocus()
 
-    def on_run(self):
-        if self.session is not None:
-            self.session._predict()
-            self._viewer.layers[self.label_layer_name].refresh()
-
     def on_interaction(self, event: Any):
         # Interactions are always added automatically now that the Manual Control
         # section (with its Auto Add / Auto Run toggles) has been removed.
@@ -629,19 +633,6 @@ class LayerControls(BaseGUI):
         self.interaction_type = key
         self.interaction_button._uncheck()
         self.interaction_button._check(self.interaction_type)
-
-    # Inference Behaviour
-    def inference(self, data: Any, index: int) -> None:
-        """
-        Performs inference on the provided data.
-
-        Args:
-            data: The data obtained from the layer's run method.
-            index (int): The index of the layer type, corresponding to the layer_dict key.
-        """
-        print(
-            f"Inference for interaction {index} and prompt {self.prompt_button.index == 0} and valid data {data is not None} "
-        )
 
     def _export(self) -> None:
         """Export all Label layers belonging to the current image & model pair as separate files
@@ -696,6 +687,8 @@ class LayerControls(BaseGUI):
                     _file_name = f"{_output_file}_{str(_index).zfill(4)}{_dtype}"
                 elif f"instance map - {self.session_cfg['name']}" == _layer.name:
                     _file_name = f"{_output_file}_instance_map{_dtype}"
+                elif f"semantic map - {self.session_cfg['name']}" == _layer.name:
+                    _file_name = f"{_output_file}_semantic_map{_dtype}"
 
                 else:
                     continue
