@@ -7,12 +7,21 @@ import numpy as np
 from napari._qt.layer_controls.qt_layer_controls_container import layer_to_controls
 from napari.layers import Labels
 from napari.layers.base._base_constants import ActionType
+from napari.qt.threading import create_worker
 from napari.utils.colormaps import DirectLabelColormap
 from napari.utils.notifications import show_warning
+from napari.utils.notifications import show_info
 from napari.utils.transforms import Affine
 from napari.viewer import Viewer
-from qtpy.QtWidgets import QFileDialog, QWidget
-
+from qtpy.QtCore import Qt
+from qtpy.QtWidgets import ( 
+    QFileDialog, 
+    QWidget,
+    QDialog,
+    QLabel,
+    QProgressBar,
+    QVBoxLayout,
+)
 from napari_nninteractive.controls.bbox_controls import CustomQtBBoxControls
 from napari_nninteractive.controls.lasso_controls import CustomQtLassoControls
 from napari_nninteractive.controls.point_controls import CustomQtPointsControls
@@ -26,6 +35,7 @@ from napari_nninteractive.layers.scribble_layer import ScribbleLayer
 from napari_nninteractive.utils.affine import is_orthogonal
 from napari_nninteractive.utils.utils import ColorMapper, determine_layer_index
 from napari_nninteractive.widget_gui import BaseGUI
+from napari_nninteractive.resolution_selector import ResolutionLevelDialog
 
 layer_to_controls[SinglePointLayer] = CustomQtPointsControls
 layer_to_controls[BBoxLayer] = CustomQtBBoxControls
@@ -75,6 +85,11 @@ class LayerControls(BaseGUI):
         # without a layer marker (e.g. Initialize with Mask).
         self._interaction_history = []
 
+        # Name of the multiscale layer hidden after materialising one of its pyramid levels into 
+        # memory. Its visibility can be restored on session. None if no layer is hidden
+        self._hidden_source_name = None
+        self._load_dialog = None
+        self._load_worker = None
         # Coloured per-tool mouse cursor (green = positive, red = negative), created
         # lazily on first use via _prompt_cursor.
         self._prompt_cursor_manager = None
@@ -196,6 +211,108 @@ class LayerControls(BaseGUI):
         self._viewer.add_layer(label_layer)
 
     # Event Handlers
+    def _select_resolution_level(self, image_layer) -> int:
+        """Pick the pyramid level to segment for a (possibly multiscale) layer.
+
+        Returns 0 for single-scale layers, the user's choice for multiscale
+        layers, or -1 if the user cancels (the caller should abort init).
+        """
+        if not getattr(image_layer, "multiscale", False) or len(image_layer.data) <= 1:
+            return 0
+        shapes = [arr.shape for arr in image_layer.data]
+        dialog = ResolutionLevelDialog(shapes, scale=image_layer.scale, parent=self)
+        if not dialog.exec():
+            return -1
+        return dialog.selected_level()
+
+    def _materialize_level(self, image_layer, level: int, array: np.ndarray):
+        """Add one level of a multiscale layer as a plain in-memory image layer.
+        The new layer gets the level's scale, it overlays the original
+        multiscale layer in world coordinates. The original layer is hidden
+        and its name remembered for restoring later. Runs on the GUI
+        thread; ``array`` must already be a dense in-memory array.
+        """
+        name = f"{image_layer.name} - level {level}"
+        if name in self._viewer.layers:
+            # Re-Initialize on the same image and level: reuse the copy that is
+            # already loaded instead of materializing it again.
+            new_layer = self._viewer.layers[name]
+        else:
+            _full = np.asarray(image_layer.data[0].shape, dtype=float)
+            _scale = np.asarray(image_layer.scale, dtype=float) * (
+                _full / np.asarray(array.shape, dtype=float)
+            )
+            new_layer = self._viewer.add_image(
+                array,
+                name=name,
+                scale=_scale,
+                translate=image_layer.translate,
+                rotate=image_layer.rotate,
+                shear=image_layer.shear,
+                affine=image_layer.affine,
+                colormap=image_layer.colormap.name,
+                contrast_limits=image_layer.contrast_limits,
+                metadata=image_layer.metadata,
+            )
+        image_layer.visible = False
+        self._hidden_source_name = image_layer.name
+        return new_layer
+
+    def _on_level_loaded(self, image_layer, level: int, array: np.ndarray) -> None:
+        """GUI-thread continuation after the level-load worker: add the in-memory
+        layer, point the image selection at it, and re-run Initialize on it."""
+        self._close_level_load_dialog()
+        new_layer = self._materialize_level(image_layer, level, array)
+        show_info(f"nnInteractive: working on in-memory copy '{new_layer.name}'")
+        self.image_selection.setCurrentText(new_layer.name)
+        self.on_init()
+
+    def _on_level_load_errored(self, exc: BaseException) -> None:
+        """The level failed to load (I/O error, out of memory, …). Surface it and
+        leave the GUI in the pre-Initialize state so the user can retry."""
+        self._close_level_load_dialog()
+        show_warning(f"Failed to load resolution level: {exc}")
+        self._unlock_session()
+
+    def _show_level_load_dialog(self, level: int) -> None:
+        """Modal busy popup while a pyramid level is read into memory. Closed by
+        the worker's completion handlers."""
+        self._close_level_load_dialog()  # never stack two
+        dialog = QDialog(self)
+        # Title bar without close/min/max buttons: dismissing it must not look
+        # like it cancels the load (which keeps running regardless).
+        dialog.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.setWindowTitle("nnInteractive")
+        dialog.setFixedWidth(340)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"Loading resolution level {level} into memory…"))
+        bar = QProgressBar()
+        bar.setRange(0, 0)  # indeterminate (busy) bar
+        bar.setTextVisible(False)
+        layout.addWidget(bar)
+
+        self._load_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+
+    def _close_level_load_dialog(self) -> None:
+        """Close and drop the busy popup if one is open. Idempotent."""
+        dialog = self._load_dialog
+        self._load_dialog = None
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
+
+    def _restore_source_visibility(self) -> None:
+        """Make the original multiscale layer visible again after session
+        teardown. The in-memory level copy stays in the viewer. Idempotent."""
+        name = self._hidden_source_name
+        self._hidden_source_name = None
+        if name is not None and name in self._viewer.layers:
+            self._viewer.layers[name].visible = True
+
     def on_init(self, *args, **kwargs) -> None:
         """
         Initializes the session by configuring the selected model and image and creating a label layer.
@@ -210,6 +327,36 @@ class LayerControls(BaseGUI):
         if image_name == "":
             raise ValueError("No Image Layer selected")
 
+        # --- OME-Zarr handling --- #
+        # For OME-Zarr images, materialize the chosen level
+        # into memory as a plain image layer and re-run Initialize on that layer
+        # browsing is much faster, the data has to be densified for, 
+        # and prompts share its grid by construction instead of being aligned 
+        # to the pyramid via scale.
+        image_layer = self._viewer.layers[image_name]
+        if getattr(image_layer, "multiscale", False):
+            _level = self._select_resolution_level(image_layer)
+            if _level < 0:
+                self.source_cfg = None
+                self.session_cfg = None
+                return  # user cancelled initialization
+            # Load the level on a worker thread so a large lazy zarr
+            # level never freezes the GUI; the modal busy dialog blocks input
+            # meanwhile. The caller (widget_main.on_init) sees session_cfg is None
+            # and stops; init continues in _on_level_loaded once the data is in.
+            self.source_cfg = None
+            self.session_cfg = None
+            self._show_level_load_dialog(_level)
+            self._load_worker = create_worker(
+                np.asarray,
+                image_layer.data[_level],
+                _connect={
+                    "returned": lambda arr: self._on_level_loaded(image_layer, _level, arr),
+                    "errored": self._on_level_load_errored,
+                },
+                _ignore_errors=True,
+            )
+            return
         if self._remote_mode:
             # Remote: server already loaded the checkpoint at startup.
             model_name = "remote"
@@ -237,9 +384,14 @@ class LayerControls(BaseGUI):
                 self.checkpoint_path = ensure_model_available(model_name)
             print(f"Using Model {model_name} at : {self.checkpoint_path}")
 
-        # --- DATA HANDLING --- #
         # Get everything we need from the image layer
-        image_layer = self._viewer.layers[image_name]
+        if getattr(image_layer, "multiscale", False):
+            show_info(
+                f"nnInteractive: segmenting at level {_level} "
+                f"({' x '.join(str(int(s)) for s in _shape)} px)"
+            )
+        
+
         self.source_cfg = {
             "name": image_name,
             "model": model_name,

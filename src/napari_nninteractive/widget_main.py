@@ -9,7 +9,7 @@ import numpy as np
 from napari.qt.threading import create_worker
 from napari.utils.notifications import show_warning
 from napari.viewer import Viewer
-from qtpy.QtCore import QEvent, Qt
+from qtpy.QtCore import QEvent, Qt, QTimer
 from qtpy.QtWidgets import (
     QApplication,
     QDialog,
@@ -33,6 +33,7 @@ try:
         SessionExpiredError,
     )
 except ImportError:  # remote client extra not installed
+
     class SessionExpiredError(Exception):  # type: ignore[no-redef]
         pass
 
@@ -175,6 +176,30 @@ class nnInteractiveWidget(LayerControls):
     preserve and resume it.
     """
 
+    def _release_volume_textures(self) -> None:
+        """Free the 3D volume textures vispy keeps after leaving 3D view.
+
+        """
+        if self._viewer.dims.ndisplay != 2:
+            return
+        try:
+            canvas = self._viewer.window._qt_viewer.canvas
+            visuals = canvas.layer_to_visual
+        except AttributeError:
+            return
+        dummy = np.zeros((1, 1, 1), dtype=np.float32)
+        for vispy_layer in list(visuals.values()):
+            layer_node = getattr(vispy_layer, "_layer_node", None)
+            volume = getattr(layer_node, "_volume_node", None)
+            if volume is None:
+                continue
+            try:
+                volume.set_data(dummy, clim=(0.0, 1.0))
+            except Exception:  # noqa: BLE001 - never break rendering over cleanup
+                continue
+        canvas.native.update()  # GL commands run on the next draw
+
+
     def __init__(self, viewer: Viewer, parent: Optional[QWidget] = None):
         """
         Initialize the nnInteractiveWidget.
@@ -199,7 +224,10 @@ class nnInteractiveWidget(LayerControls):
         # re-submitted, unchanged path be a no-op instead of an uninitialize.
         self._active_checkpoint_text = None
         self._viewer.dims.events.order.connect(self.on_axis_change)
-
+        
+        self._viewer.dims.events.ndisplay.connect(
+            lambda e: QTimer.singleShot(0, self._release_volume_textures)
+        )
         # Belt-and-suspenders lease release on shutdown. closeEvent on this
         # widget does NOT fire reliably when napari quits (the dock widget
         # tree is destroyed without per-child closeEvent), and the Ctrl+Q
@@ -270,6 +298,10 @@ class nnInteractiveWidget(LayerControls):
             return
 
         super().on_init(*args, **kwargs)
+        if self.session_cfg is None:
+            # Initialization was cancelled (e.g. the resolution-level dialog was
+            # dismissed); nothing was configured, so stop here.
+            return
 
         if self.session is None:
             self._construct_local_session()
@@ -290,6 +322,7 @@ class nnInteractiveWidget(LayerControls):
         )
 
         _data = self._viewer.layers[self.session_cfg["name"]].data
+        _data = np.asarray(_data)
         _data = _data[np.newaxis, ...]
 
         if self.source_cfg["ndim"] == 2:
@@ -546,12 +579,13 @@ class nnInteractiveWidget(LayerControls):
             import httpx
             from nnInteractive.inference.remote import nnInteractiveRemoteInferenceSession
         except ImportError:
-            return None, "Remote mode requires the client extra: pip install 'nnInteractive[client]'"
+            return (
+                None,
+                "Remote mode requires the client extra: pip install 'nnInteractive[client]'",
+            )
 
         try:
-            session = nnInteractiveRemoteInferenceSession(
-                server_url=server_url, api_key=api_key
-            )
+            session = nnInteractiveRemoteInferenceSession(server_url=server_url, api_key=api_key)
         except ServerAtCapacityError:
             return None, "Server full; try again later."
         # Connectivity problems must be handled BEFORE the session-lost case below:
@@ -809,6 +843,7 @@ class nnInteractiveWidget(LayerControls):
         self._store_in_progress_segmentation()
         self.session = None
         self._clear_layers()
+        self._restore_source_visibility()
         self._unlock_session()
         return True
 
@@ -826,6 +861,7 @@ class nnInteractiveWidget(LayerControls):
         else:
             self.session = None
         self._clear_layers()
+        self._restore_source_visibility()
         self._unlock_session()
         # No tool is active after teardown; restore the default canvas cursor.
         self._refresh_prompt_cursor()
@@ -1023,7 +1059,9 @@ class nnInteractiveWidget(LayerControls):
         if self.session is None:
             return
         if not getattr(self.session, "supports_undo", False):
-            show_warning("Undo is not supported by this server. Please update nninteractive-server.")
+            show_warning(
+                "Undo is not supported by this server. Please update nninteractive-server."
+            )
             return
         try:
             undone = self.session.undo()
