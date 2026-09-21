@@ -3,6 +3,8 @@ from napari._qt.layer_controls.qt_shapes_controls import QtShapesControls
 from napari.utils.action_manager import action_manager
 from packaging.version import Version
 
+from napari_nninteractive.controls import hide_widgets
+
 
 class CustomQtBBoxControls(QtShapesControls):
     """Custom Qt controls for bounding box layer, hiding controls for non-rectangle shapes.
@@ -15,16 +17,13 @@ class CustomQtBBoxControls(QtShapesControls):
         super().__init__(layer)
         # We don't need this Fields -> Hide them
         if Version(napari.__version__) >= Version("0.6.5"):
-            fields_to_hide = [
-                self._face_color_control.face_color_edit,
-                self._edge_color_control.edge_color_edit,
-                self._face_color_control.face_color_label,
-                self._edge_color_control.edge_color_label,
-            ]
-
-            for field in fields_to_hide:
-                field.hide()
-                field.setDisabled(True)
+            hide_widgets(
+                self,
+                "_face_color_control.face_color_edit",
+                "_edge_color_control.edge_color_edit",
+                "_face_color_control.face_color_label",
+                "_edge_color_control.edge_color_label",
+            )
         else:
             fields_to_hide = [self.faceColorEdit, self.edgeColorEdit]
             for field in fields_to_hide:

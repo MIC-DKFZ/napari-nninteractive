@@ -3,6 +3,8 @@ from napari._qt.layer_controls.qt_labels_controls import QtLabelsControls
 from napari.utils.action_manager import action_manager
 from packaging.version import Version
 
+from napari_nninteractive.controls import hide_widgets
+
 
 class CustomQtScribbleControls(QtLabelsControls):
     """Custom Qt controls for scribble layer, hiding not needed controls.
@@ -15,27 +17,23 @@ class CustomQtScribbleControls(QtLabelsControls):
         super().__init__(layer)
 
         if Version(napari.__version__) >= Version("0.6.5"):
-            fields_to_hide = [
-                self._colormode_combobox_control.color_mode_combobox,
-                self._colormode_combobox_control.color_mode_combobox_label,
-                self._contour_spinbox_control.contour_spinbox,
-                self._contour_spinbox_control.contour_spinbox_label,
-                self._preserve_labels_checkbox_control.preserve_labels_checkbox,
-                self._preserve_labels_checkbox_control.preserve_labels_checkbox_label,
-                self._contour_spinbox_control.contour_spinbox,
-                self._contour_spinbox_control.contour_spinbox_label,
-                self._ndim_spinbox_control.ndim_spinbox,
-                self._ndim_spinbox_control.ndim_spinbox_label,
-                self._contiguous_checkbox_control.contiguous_checkbox,
-                self._contiguous_checkbox_control.contiguous_checkbox_label,
-                self._display_selected_label_checkbox_control.selected_color_checkbox,
-                self._display_selected_label_checkbox_control.selected_color_checkbox_label,
-            ]
-
-            for field in fields_to_hide:
-                field.hide()
-                field.setDisabled(True)
-            self._label_control.label_color.setDisabled(True)
+            hide_widgets(
+                self,
+                "_colormode_combobox_control.color_mode_combobox",
+                "_colormode_combobox_control.color_mode_combobox_label",
+                "_contour_spinbox_control.contour_spinbox",
+                "_contour_spinbox_control.contour_spinbox_label",
+                "_preserve_labels_checkbox_control.preserve_labels_checkbox",
+                "_preserve_labels_checkbox_control.preserve_labels_checkbox_label",
+                "_ndim_spinbox_control.ndim_spinbox",
+                "_ndim_spinbox_control.ndim_spinbox_label",
+                "_contiguous_checkbox_control.contiguous_checkbox",
+                "_contiguous_checkbox_control.contiguous_checkbox_label",
+                "_display_selected_label_checkbox_control.selected_color_checkbox",
+                "_display_selected_label_checkbox_control.selected_color_checkbox_label",
+            )
+            if hasattr(self, "_label_control"):
+                self._label_control.label_color.setDisabled(True)
 
             buttons_to_hide = [
                 {"button": self.colormap_update, "shortcut": None},
