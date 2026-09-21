@@ -1,6 +1,6 @@
 [project]
 name = "napari-nninteractive"
-version = "2.5.3"
+version = "2.5.4"
 description = "nnInteractive plugin for Napari"
 readme = "README.md"
 license = {file = "LICENSE"}
