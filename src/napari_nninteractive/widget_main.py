@@ -22,8 +22,8 @@ from qtpy.QtWidgets import (
 )
 
 # NOTE: torch, nnunetv2 and batchgenerators are only needed for *local* inference
-# (the nnInteractive[local] extra). They are imported lazily inside
-# _construct_local_session() so a remote-only install (nnInteractive[client]) stays
+# (the napari-nninteractive[local] extra). They are imported lazily inside
+# _construct_local_session() so a remote-only install (nninteractive-client only) stays
 # PyTorch-free.
 from napari_nninteractive.widget_controls import LayerControls
 
@@ -77,6 +77,72 @@ def _show_scrollable_error(parent, title: str, message: str) -> None:
 
     dlg.resize(760, 460)
     dlg.exec_()
+
+
+def _find_inference_session_class(parent, class_name: str):
+    """Locate ``class_name`` in ``nnInteractive.inference``, or raise with real guidance.
+
+    Two traps this has to survive, both of which used to surface as a bare
+    ``TypeError: 'NoneType' object is not callable`` at the construction site:
+
+    1. ``nnInteractive`` and ``nnInteractive.inference`` are PEP 420 namespace
+       packages split across two distributions -- ``nninteractive-client`` (ships
+       only ``inference/remote/``) and the full ``nnInteractive`` (ships the local
+       ``inference_session.py``). ``__path__`` therefore holds ONE PORTION PER
+       DISTRIBUTION and its order is an accident of how each was installed, so
+       searching ``__path__[0]`` alone finds nothing whenever the client's portion
+       happens to sort first (typical when the full package is an editable install
+       and the client is a regular one). Search every portion.
+    2. ``recursive_find_python_class`` RETURNS None instead of raising when the
+       class is absent, so a genuinely missing local backend passes silently.
+
+    Same fix as ``inference_session.py::_load_trainer`` applies for
+    ``nnInteractive.trainer``, generalised because ``nnInteractive.inference``
+    (unlike ``nnInteractive.trainer``) is itself a shared namespace package.
+    """
+    from batchgenerators.utilities.file_and_folder_operations import join
+    from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
+
+    searched = []
+    for portion in nnInteractive.__path__:
+        # Editable installs put a non-filesystem placeholder string on __path__
+        # (setuptools' "__path_hook__"); it can never hold a class.
+        if not Path(portion).is_dir():
+            continue
+        searched.append(join(portion, "inference"))
+        found = recursive_find_python_class(
+            join(portion, "inference"), class_name, "nnInteractive.inference"
+        )
+        if found is not None:
+            return found
+
+    searched_list = "\n".join(f"    {p}" for p in searched) or "    (none)"
+    message = (
+        f"Could not find the inference session class '{class_name}' anywhere in "
+        "nnInteractive.inference.\n\n"
+        "This almost always means the FULL nnInteractive backend is not installed: "
+        "only the lightweight, torch-free remote client (nninteractive-client) is "
+        "present, and it provides remote inference only. Either use Remote mode, or "
+        "install the local extra and restart napari:\n\n"
+        '    pip install "napari-nninteractive[local]"\n\n'
+        "If you are working from an editable source checkout, install the client "
+        "editable FIRST, then the full package, so both share the nnInteractive "
+        "namespace from your working tree:\n\n"
+        "    pip uninstall -y nnInteractive nninteractive-client\n"
+        "    pip install -e ./client\n"
+        "    pip install -e .\n\n"
+        "Searched these locations:\n"
+        f"{searched_list}\n\n"
+        f"nnInteractive.__path__ = {list(nnInteractive.__path__)}"
+    )
+    _show_scrollable_error(
+        parent, "nnInteractive — local inference backend not found", message
+    )
+    raise RuntimeError(
+        f"Could not find inference session class '{class_name}' in "
+        f"nnInteractive.inference (searched {searched}; see the dialog for how to "
+        "install the local backend)."
+    )
 
 
 def _format_cudnn_version(v: int) -> str:
@@ -454,20 +520,21 @@ class nnInteractiveWidget(LayerControls):
 
     def _construct_local_session(self) -> None:
         """Construct the local inference session from self.checkpoint_path."""
-        # Heavy, local-only dependencies (the nnInteractive[local] extra). Imported
+        # Heavy, local-only dependencies (the napari-nninteractive[local] extra). Imported
         # here so remote-only installs never need torch / nnU-Net.
         #
         # ALWAYS surface the underlying error: an ImportError here is often NOT a
         # missing install but a torch/torchvision/numpy the user changed themselves
         # that now fails to import. Hiding the reason behind a generic "install the
         # local extra" message sends them chasing the wrong fix.
+        # nnunetv2 is imported here purely as a probe: it is used by
+        # _find_inference_session_class below, and importing it inside this guard is what
+        # turns a broken torch/nnU-Net environment into the explanatory dialog instead of
+        # an ImportError from deeper down.
         try:
             import torch
-            from batchgenerators.utilities.file_and_folder_operations import (
-                join,
-                load_json,
-            )
-            from nnunetv2.utilities.find_class_by_name import (
+            from batchgenerators.utilities.file_and_folder_operations import load_json
+            from nnunetv2.utilities.find_class_by_name import (  # noqa: F401  (probe)
                 recursive_find_python_class,
             )
         except ImportError as cause:
@@ -480,7 +547,7 @@ class nnInteractiveWidget(LayerControls):
                 "mismatched -- fix or uninstall that package.\n\n"
                 "Otherwise the local extra may not be installed. Install it, then "
                 "restart napari:\n"
-                "    pip install 'nnInteractive[local]'"
+                "    pip install 'napari-nninteractive[local]'"
             )
             _show_scrollable_error(
                 self, "nnInteractive — local backend unavailable", message
@@ -500,11 +567,7 @@ class nnInteractiveWidget(LayerControls):
         else:
             inference_class = "nnInteractiveInferenceSession"
 
-        inference_class = recursive_find_python_class(
-            join(nnInteractive.__path__[0], "inference"),
-            inference_class,
-            "nnInteractive.inference",
-        )
+        inference_class = _find_inference_session_class(self, inference_class)
 
         # CPU Fallback if no Cuda is available
         if torch.cuda.is_available():
@@ -546,7 +609,10 @@ class nnInteractiveWidget(LayerControls):
             import httpx
             from nnInteractive.inference.remote import nnInteractiveRemoteInferenceSession
         except ImportError:
-            return None, "Remote mode requires the client extra: pip install 'nnInteractive[client]'"
+            return None, (
+                "Remote mode requires the nnInteractive remote client: "
+                "pip install nninteractive-client"
+            )
 
         try:
             session = nnInteractiveRemoteInferenceSession(
